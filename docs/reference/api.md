@@ -837,20 +837,21 @@ day-boundary rules.
 ### GET `/api/reports/daily-sales/export`
 
 Owner-only daily sales export for one tenant business date. Returns either a single XLSX workbook
-(`Summary` and `Items` sheets) or one half of a two-file CSV pair. Accounting and row grouping live
-entirely in `buildDailySalesExportDataset`; the endpoint only serializes and sets headers. See
-[daily sales export](daily-sales-export.md) for the full reconciliation contract, the summary metric
-field order, and the Items columns.
+(`Summary`, `Items`, and `Payments` sheets) or one part of a three-file CSV set. Accounting and row
+grouping live entirely in `buildDailySalesExportDataset`; the endpoint only serializes and sets
+headers. See [daily sales export](daily-sales-export.md) for the full reconciliation contract, the
+summary metric field order, and the Items and Payments columns.
 
 | Param | Values | Notes |
 | --- | --- | --- |
 | `date` | `YYYY-MM-DD` | Tenant business date; defaults to the current business date. |
 | `format` | `xlsx` or `csv` | Required. Any other value returns `400`. |
-| `part` | `summary` or `items` | Required when `format=csv`; ignored for `xlsx`. Missing on CSV returns `400`. |
+| `part` | `summary`, `items`, or `payments` | Required when `format=csv`; ignored for `xlsx`. Missing on CSV returns `400`. |
 
 - `format=xlsx` returns `200` with `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` and `Content-Disposition: attachment; filename="daily-sales-YYYY-MM-DD.xlsx"`. Money cells are numeric with a currency-fraction-digit number format; the workbook holds no formulas.
 - `format=csv&part=summary` returns `text/csv` with header `metric,value`.
 - `format=csv&part=items` returns `text/csv` with header `product_id,product_name,product_sku,quantity,gross_item_sales,item_discounts,net_item_sales,tax_amount`.
+- `format=csv&part=payments` returns `text/csv` with header `bill_number,order_number,payment_time,method,amount,transaction_id`.
 
 Errors: `400` for an invalid `format` or a CSV without `part`; `401` unauthenticated; `403` non-owner;
 `409` for a concurrent-write conflict; `500` otherwise. CSV cells that would start with `=`, `+`,

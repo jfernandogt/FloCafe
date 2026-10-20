@@ -42,6 +42,7 @@ export interface PrepaidPayment {
   method: string;
   payment_method_id?: number;
   amount: number;
+  transaction_id?: string;
 }
 
 export interface PrepaidDiscount {
@@ -86,6 +87,7 @@ interface Payment {
   method: string;
   payment_method_id?: number;
   amount: string;
+  transaction_id?: string;
 }
 
 type AmountTarget =
@@ -125,6 +127,7 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
   const [walletAmount, setWalletAmount] = useState('');
   const [processing, setProcessing] = useState(false);
   const [customMethods, setCustomMethods] = useState<CustomPaymentMethod[]>([]);
+  const [cardTransactionIdRequired, setCardTransactionIdRequired] = useState(false);
 
   // Discount state (applied to the order once checkout is confirmed)
   const [discountOpen, setDiscountOpen] = useState(false);
@@ -226,6 +229,10 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
       .catch(() => {})
       .finally(() => setDiscountModeLoaded(true));
     api
+      .get('/settings/card_transaction_id_required')
+      .then((res) => setCardTransactionIdRequired(res.data?.setting?.value === 'true'))
+      .catch(() => {});
+    api
       .get('/payment-methods')
       .then((res) => {
         const methods: CustomPaymentMethod[] = res.data.payment_methods || [];
@@ -315,6 +322,19 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
     payments.reduce((s, p) => s + toMinorUnits(toStoredUnit(parseFloat(p.amount) || 0)), 0) +
     toMinorUnits(walletAmt);
   const remainingMinor = toMinorUnits(remaining);
+
+  const updatePaymentTransactionId = (idx: number, value: string) => {
+    setPayments((current) =>
+      current.map((payment, index) =>
+        index === idx ? { ...payment, transaction_id: value } : payment,
+      ),
+    );
+  };
+
+  const needsTransactionId = (payment: Payment) =>
+    cardTransactionIdRequired &&
+    payment.method === 'card' &&
+    payment.payment_method_id === undefined;
 
   const updatePaymentAmount = (idx: number, value: string) => {
     setPaymentsTouched(true);
@@ -434,6 +454,15 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
       toast.error(t('paymentFailed'));
       return;
     }
+    if (
+      paymentRows.some(
+        (p) =>
+          needsTransactionId(p) && (parseFloat(p.amount) || 0) > 0 && !p.transaction_id?.trim(),
+      )
+    ) {
+      toast.error(t('cardTransactionIdMissing'));
+      return;
+    }
     const paymentTotalMinor =
       paymentRows.reduce(
         (sum, payment) => sum + toMinorUnits(toStoredUnit(Number(payment.amount) || 0)),
@@ -479,6 +508,9 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
         method: p.payment_method_id === undefined ? p.method : 'custom',
         ...(p.payment_method_id !== undefined ? { payment_method_id: p.payment_method_id } : {}),
         amount: toStoredUnit(parseFloat(p.amount) || 0),
+        ...(needsTransactionId(p) && p.transaction_id?.trim()
+          ? { transaction_id: p.transaction_id.trim() }
+          : {}),
       }))
       .filter((p) => p.amount > 0 && !isNaN(p.amount));
 
@@ -814,34 +846,50 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
                       ? payment.method
                       : `custom:${payment.payment_method_id}`
                   }
-                  className="flex min-h-12"
+                  className="space-y-1"
                 >
-                  <button
-                    type="button"
-                    title={label}
-                    onClick={() => {
-                      setAmountTarget({ kind: 'payment', index: idx });
-                      allocateRemainingTo(idx);
-                    }}
-                    className={`touch-target w-36 shrink-0 justify-start rounded-s-xl border px-3 gap-2 text-sm font-semibold transition-colors ${active ? 'bg-brand text-white border-brand' : 'bg-muted text-foreground border-border hover:border-brand hover:text-brand'}`}
-                  >
-                    {Icon && <Icon size={15} />}
-                    <span className="truncate">{label}</span>
-                  </button>
-                  <div className="flex flex-1 items-center border border-s-0 border-border rounded-e-xl bg-card focus-within:ring-2 focus-within:ring-brand focus-within:border-transparent">
-                    <span className="ps-3 text-muted-foreground text-xs">{inputCurrencyLabel}</span>
-                    <input
-                      type="number"
-                      value={payment.amount}
-                      onFocus={() => setAmountTarget({ kind: 'payment', index: idx })}
-                      onChange={(e) => updatePaymentAmount(idx, e.target.value)}
-                      placeholder="0.00"
-                      inputMode="decimal"
-                      className="min-w-0 flex-1 px-2 py-2 text-end text-base font-semibold outline-none rounded-e-xl"
-                      step={inputCurrencyStep}
-                      min="0"
-                    />
+                  <div className="flex min-h-12">
+                    <button
+                      type="button"
+                      title={label}
+                      onClick={() => {
+                        setAmountTarget({ kind: 'payment', index: idx });
+                        allocateRemainingTo(idx);
+                      }}
+                      className={`touch-target w-36 shrink-0 justify-start rounded-s-xl border px-3 gap-2 text-sm font-semibold transition-colors ${active ? 'bg-brand text-white border-brand' : 'bg-muted text-foreground border-border hover:border-brand hover:text-brand'}`}
+                    >
+                      {Icon && <Icon size={15} />}
+                      <span className="truncate">{label}</span>
+                    </button>
+                    <div className="flex flex-1 items-center border border-s-0 border-border rounded-e-xl bg-card focus-within:ring-2 focus-within:ring-brand focus-within:border-transparent">
+                      <span className="ps-3 text-muted-foreground text-xs">
+                        {inputCurrencyLabel}
+                      </span>
+                      <input
+                        type="number"
+                        value={payment.amount}
+                        onFocus={() => setAmountTarget({ kind: 'payment', index: idx })}
+                        onChange={(e) => updatePaymentAmount(idx, e.target.value)}
+                        placeholder="0.00"
+                        inputMode="decimal"
+                        className="min-w-0 flex-1 px-2 py-2 text-end text-base font-semibold outline-none rounded-e-xl"
+                        step={inputCurrencyStep}
+                        min="0"
+                      />
+                    </div>
                   </div>
+                  {needsTransactionId(payment) && active && (
+                    <input
+                      type="text"
+                      value={payment.transaction_id ?? ''}
+                      onChange={(e) => updatePaymentTransactionId(idx, e.target.value)}
+                      placeholder={t('cardTransactionIdLabel')}
+                      aria-label={t('cardTransactionIdLabel')}
+                      maxLength={256}
+                      autoComplete="off"
+                      className="w-full min-h-11 rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand"
+                    />
+                  )}
                 </div>
               );
             })}

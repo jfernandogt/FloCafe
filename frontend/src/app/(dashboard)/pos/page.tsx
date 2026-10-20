@@ -117,7 +117,12 @@ interface PrepaidAttempt {
 }
 
 interface PrepaidPaymentRequest {
-  payments: Array<{ method: string; payment_method_id?: number; amount: number }>;
+  payments: Array<{
+    method: string;
+    payment_method_id?: number;
+    amount: number;
+    transaction_id?: string;
+  }>;
   customer_id: string | number | null;
 }
 
@@ -196,13 +201,20 @@ const parsePrepaidPaymentRequest = (serialized: string): PrepaidPaymentRequest |
       const payment = line as Record<string, unknown>;
       const keys = Object.keys(payment).sort().join(',');
       if (
-        (keys !== 'amount,method' && keys !== 'amount,method,payment_method_id') ||
+        ![
+          'amount,method',
+          'amount,method,payment_method_id',
+          'amount,method,transaction_id',
+          'amount,method,payment_method_id,transaction_id',
+        ].includes(keys) ||
         typeof payment.method !== 'string' ||
         payment.method.length === 0 ||
         typeof payment.amount !== 'number' ||
         !Number.isFinite(payment.amount) ||
         payment.amount <= 0 ||
-        (payment.payment_method_id !== undefined && typeof payment.payment_method_id !== 'number')
+        (payment.payment_method_id !== undefined &&
+          typeof payment.payment_method_id !== 'number') ||
+        (payment.transaction_id !== undefined && typeof payment.transaction_id !== 'string')
       )
         return null;
       payments.push({
@@ -211,6 +223,9 @@ const parsePrepaidPaymentRequest = (serialized: string): PrepaidPaymentRequest |
           ? { payment_method_id: payment.payment_method_id as number }
           : {}),
         amount: payment.amount,
+        ...(payment.transaction_id !== undefined
+          ? { transaction_id: payment.transaction_id as string }
+          : {}),
       });
     }
     return { payments, customer_id: record.customer_id as string | number | null };
@@ -699,6 +714,7 @@ export default function POSPage() {
       payment_method_unavailable: t('paymentMethodUnavailable'),
       payment_input_invalid: t('paymentInputInvalid'),
       cash_session_required: tExpenses('cashSessionClosed'),
+      card_transaction_id_required: t('cardTransactionIdMissing'),
     };
     const confirmedNotApplied = failure.trusted && failure.outcome === 'not_applied';
     const expectedRejection =
@@ -1438,6 +1454,7 @@ export default function POSPage() {
         method: p.method,
         ...(p.payment_method_id !== undefined ? { payment_method_id: p.payment_method_id } : {}),
         amount: p.amount,
+        ...(p.transaction_id !== undefined ? { transaction_id: p.transaction_id } : {}),
       }));
     if (walletAmount > 0) paymentLines.push({ method: 'wallet', amount: walletAmount });
     const paymentCustomerId: string | number | null = cart.customerId ?? null;

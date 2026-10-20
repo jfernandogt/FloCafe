@@ -35,13 +35,17 @@ export function PaymentMethodsSettings({ isAdmin }: { isAdmin: boolean }) {
   const [mergeTargets, setMergeTargets] = useState<Record<number, string>>({});
   const [merges, setMerges] = useState<MergeRecord[]>([]);
   const [splitChecksEnabled, setSplitChecksEnabled] = useState(false);
+  const [cardTransactionIdRequired, setCardTransactionIdRequired] = useState(false);
 
   const load = async () => {
-    const [methodsRes, historyRes, splitRes] = await Promise.all([
+    const [methodsRes, historyRes, splitRes, cardTransactionRes] = await Promise.all([
       api.get('/payment-methods?include_inactive=true'),
       api.get('/payment-methods/merge-history'),
       api
         .get('/settings/split_checks_enabled')
+        .catch(() => ({ data: { setting: { value: 'false' } } })),
+      api
+        .get('/settings/card_transaction_id_required')
         .catch(() => ({ data: { setting: { value: 'false' } } })),
     ]);
     const rows = methodsRes.data.payment_methods || [];
@@ -49,6 +53,7 @@ export function PaymentMethodsSettings({ isAdmin }: { isAdmin: boolean }) {
     setNames(Object.fromEntries(rows.map((row: CustomPaymentMethod) => [row.id, row.name])));
     setMerges(historyRes.data.merges || []);
     setSplitChecksEnabled(splitRes.data?.setting?.value === 'true');
+    setCardTransactionIdRequired(cardTransactionRes.data?.setting?.value === 'true');
   };
 
   useEffect(() => {
@@ -225,6 +230,29 @@ export function PaymentMethodsSettings({ isAdmin }: { isAdmin: boolean }) {
               await api.put('/settings/split_checks_enabled', { value: String(value) });
             } catch {
               setSplitChecksEnabled(!value);
+              toast.error(t('saveFailed'));
+            }
+          }}
+        />
+      </div>
+
+      <div className="bg-card rounded-xl border border-border p-6 flex items-center justify-between gap-4">
+        <div>
+          <h2 className="font-semibold text-foreground">{t('cardTransactionIdRequired')}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{t('cardTransactionIdRequiredHint')}</p>
+        </div>
+        <input
+          type="checkbox"
+          className="size-5 shrink-0"
+          disabled={!isAdmin}
+          checked={cardTransactionIdRequired}
+          onChange={async (e) => {
+            const value = e.target.checked;
+            setCardTransactionIdRequired(value);
+            try {
+              await api.put('/settings/card_transaction_id_required', { value: String(value) });
+            } catch {
+              setCardTransactionIdRequired(!value);
               toast.error(t('saveFailed'));
             }
           }}
