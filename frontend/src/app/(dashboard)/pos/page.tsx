@@ -19,7 +19,6 @@ import type {
   Order,
   CartItem,
 } from '@/lib/types';
-import { cartItemToOrderItem } from '@/lib/cart-order-item';
 import { useConfirm } from '@/hooks/use-confirm';
 import { Drawer, DrawerContent, DrawerTrigger } from '@/components/ui/drawer';
 
@@ -802,7 +801,7 @@ export default function POSPage() {
     currentTenant?.currency || '',
     getCountryByCode(currentTenant?.country ?? '')?.locale,
   );
-  const { printBill, printKot } = usePrinterStore();
+  const { printBill, printBills, printKot } = usePrinterStore();
   const billingIsPrepaid = billingType === 'prepaid';
   const shouldTakePaymentNow = billingIsPrepaid;
 
@@ -889,14 +888,20 @@ export default function POSPage() {
     return data.bill as Bill;
   };
 
-  const printBillForTenant = async (bill: Bill, force = false, reservedWindow?: Window | null) => {
+  const printBillForTenant = async (
+    bill: Bill | Bill[],
+    force = false,
+    reservedWindow?: Window | null,
+  ) => {
     if (!currentTenant || (!force && !autoPrintBill)) {
       if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
       return;
     }
 
     try {
-      const printWarnings = await printBill(bill, currentTenant, undefined, reservedWindow);
+      const printWarnings = Array.isArray(bill)
+        ? await printBills(bill, currentTenant, undefined, reservedWindow)
+        : await printBill(bill, currentTenant, undefined, reservedWindow);
       showPrintWarningsToast(printWarnings);
     } catch (err) {
       // Non-fatal: print failure should not block the checkout flow.
@@ -1039,6 +1044,12 @@ export default function POSPage() {
           .get('/settings/kot_printing_enabled')
           .then((res) => setKotPrintingEnabled(res.data.setting?.value !== 'false'))
           .catch(() => {});
+        api
+          .get('/settings/split_checks_enabled')
+          .then((res) =>
+            useCartStore.getState().setGuestBillingEnabled(res.data.setting?.value === 'true'),
+          )
+          .catch(() => {});
 
         // 2. Fetch other menu data
         const requests: Promise<{ data: Record<string, unknown> }>[] = [
@@ -1176,7 +1187,7 @@ export default function POSPage() {
 
       if (pendingOrder) {
         // Add new items to an existing order with a durable retry key.
-        const newItems = cart.items.map(cartItemToOrderItem);
+        const newItems = cart.orderItems();
         const specialInstructions = cart.orderNotes || undefined;
         const itemFingerprint = buildAppendItemsFingerprint(
           pendingOrder.id,
@@ -1274,7 +1285,7 @@ export default function POSPage() {
           delivery_note: cart.orderType === 'delivery' ? cart.deliveryNote || undefined : undefined,
           waived_charge_ids: Array.from(cart.waivedChargeIds),
           opted_in_charge_ids: Array.from(cart.optedInChargeIds),
-          items: cart.items.map(cartItemToOrderItem),
+          items: cart.orderItems(),
         };
         const orderFingerprint = JSON.stringify(orderPayload);
         const priorOrderAttempt = readPostpaidAttempt();
@@ -1447,7 +1458,7 @@ export default function POSPage() {
     const isPrepaidCheckout = shouldTakePaymentNow;
     setShowPrepaidCheckout(false);
     setSubmitting(true);
-    const orderItems = cart.items.map(cartItemToOrderItem);
+    const orderItems = cart.orderItems();
     let paymentLines = payments
       .filter((p) => p.amount > 0)
       .map((p) => ({
@@ -1970,6 +1981,15 @@ export default function POSPage() {
     }
   };
 
+  // Releasing the table also leaves add-items mode, so the cart cannot append to
+  // the previous table's order.
+  const handleClearTable = () => {
+    const cartCustomerWasInherited = cart.customerSource === 'reservation';
+    cart.setTableId(null);
+    if (cartCustomerWasInherited) cart.setCustomer(null);
+    setPendingOrder(null);
+  };
+
   const handleSelectAvailableTable = (
     tableId: string,
     customer?: { id: string; name: string; phone: string } | null,
@@ -2092,7 +2112,7 @@ export default function POSPage() {
     setSubmitting(true);
     const operationId = createOperationReference();
     try {
-      const items = cart.items.map(cartItemToOrderItem);
+      const items = cart.orderItems();
       const specialInstructions = order.special_instructions || undefined;
       const fingerprint = buildAppendItemsFingerprint(order.id, items, specialInstructions);
       const storage = getAppendAttemptStorage();
@@ -2194,6 +2214,7 @@ export default function POSPage() {
     submitting,
     onPlaceOrder: handlePlaceOrder,
     onShowTablePicker: () => setShowTablePicker(true),
+    onClearTable: handleClearTable,
     onEditItem: setEditingCartItem,
     existingOrder: pendingOrder,
   };

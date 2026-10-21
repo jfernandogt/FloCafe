@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Verfügbarkeit prüfen",
     "viewMore": "Mehr anzeigen",
     "viewLess": "Weniger anzeigen",
-    "splitCheckSettingDenied": "Dieses Konto kann die Verfügbarkeit des Rechnungssplittings nicht prüfen."
+    "splitCheckSettingDenied": "Dieses Konto kann die Verfügbarkeit des Rechnungssplittings nicht prüfen.",
+    "guestNumber": "Gast {number}",
+    "sharedGuest": "Geteilt",
+    "billToGuest": "Abrechnen an",
+    "clearTable": "Tisch entfernen"
   },
   "printTest": {
     "amt": "Betrag",
@@ -1226,7 +1230,8 @@
       "station": "Station",
       "type": "Typ",
       "noPendingItems": "Keine ausstehenden Artikel",
-      "end": "ENDE"
+      "end": "ENDE",
+      "guest": "Gast"
     },
     "deliverySlip": {
       "title": "LIEFERSCHEIN",

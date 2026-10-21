@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Beschikbaarheid controleren",
     "viewMore": "Meer weergeven",
     "viewLess": "Minder weergeven",
-    "splitCheckSettingDenied": "Dit account kan de beschikbaarheid van rekeningverdeling niet controleren."
+    "splitCheckSettingDenied": "Dit account kan de beschikbaarheid van rekeningverdeling niet controleren.",
+    "guestNumber": "Gast {number}",
+    "sharedGuest": "Gedeeld",
+    "billToGuest": "Factureren aan",
+    "clearTable": "Tafel verwijderen"
   },
   "printTest": {
     "amt": "Bedrag",
@@ -1226,7 +1230,8 @@
       "station": "Keukenstation",
       "type": "Type",
       "noPendingItems": "Geen openstaande artikelen",
-      "end": "EINDE"
+      "end": "EINDE",
+      "guest": "Gast"
     },
     "deliverySlip": {
       "title": "BEZORGbon",

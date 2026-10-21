@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "بررسی دسترس‌پذیری",
     "viewMore": "نمایش بیشتر",
     "viewLess": "نمایش کمتر",
-    "splitCheckSettingDenied": "این حساب نمی‌تواند دسترس‌پذیری تقسیم صورتحساب را بررسی کند."
+    "splitCheckSettingDenied": "این حساب نمی‌تواند دسترس‌پذیری تقسیم صورتحساب را بررسی کند.",
+    "guestNumber": "مهمان {number}",
+    "sharedGuest": "مشترک",
+    "billToGuest": "صورت‌حساب برای",
+    "clearTable": "حذف میز"
   },
   "printTest": {
     "amt": "مبلغ",
@@ -1226,7 +1230,8 @@
       "station": "ایستگاه",
       "type": "نوع",
       "noPendingItems": "مورد در انتظاری نیست",
-      "end": "پایان"
+      "end": "پایان",
+      "guest": "مهمان"
     },
     "deliverySlip": {
       "title": "رسید تحویل",

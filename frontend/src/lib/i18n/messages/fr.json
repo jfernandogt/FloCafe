@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Vérifier la disponibilité",
     "viewMore": "Voir plus",
     "viewLess": "Voir moins",
-    "splitCheckSettingDenied": "Ce compte ne peut pas vérifier la disponibilité de la répartition."
+    "splitCheckSettingDenied": "Ce compte ne peut pas vérifier la disponibilité de la répartition.",
+    "guestNumber": "Convive {number}",
+    "sharedGuest": "Partagé",
+    "billToGuest": "Facturer à",
+    "clearTable": "Retirer la table"
   },
   "printTest": {
     "amt": "Montant",
@@ -1226,7 +1230,8 @@
       "station": "Poste",
       "type": "Type",
       "noPendingItems": "Aucun article en attente",
-      "end": "FIN"
+      "end": "FIN",
+      "guest": "Convive"
     },
     "deliverySlip": {
       "title": "BON DE LIVRAISON",

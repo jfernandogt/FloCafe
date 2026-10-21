@@ -22,7 +22,8 @@ interface Props {
   cartItemCount: number;
   onClose: () => void;
   onAddItems: (table: Table, order: Order) => void;
-  onPrintBill?: (bill: Bill, reservedWindow?: Window | null) => Promise<void>;
+  /** Several bills print together: one page or ticket per bill. */
+  onPrintBill?: (bill: Bill | Bill[], reservedWindow?: Window | null) => Promise<void>;
   reservePrintWindow?: () => Window | null | undefined;
   canGenerateBill: boolean;
   canReadBills?: boolean;
@@ -68,6 +69,8 @@ export default function TableCheckoutModal({
   const [addingItems, setAddingItems] = useState(false);
   const [splitChecksEnabled, setSplitChecksEnabled] = useState(false);
   const [splitBill, setSplitBill] = useState<Bill | null>(null);
+  const [guestSplitOffered, setGuestSplitOffered] = useState(false);
+  const [printAfterSplit, setPrintAfterSplit] = useState(false);
   const [printingBill, setPrintingBill] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
 
@@ -108,8 +111,43 @@ export default function TableCheckoutModal({
 
   const handlePayment = (bill: Bill) => onPayment(bill);
 
+  /** An untouched check of a table that ordered for two or more guests. */
+  const canSplitByGuest = (current: Order) => {
+    const guestSeats = new Set(
+      (current.items || [])
+        .filter((item) => !isTerminalItemStatus(item.status) && Number(item.guest_number) > 0)
+        .map((item) => Number(item.guest_number)),
+    );
+    return (
+      guestSeats.size >= 2 &&
+      splitChecksEnabled &&
+      canReadBills &&
+      current.type === 'dine_in' &&
+      !(current.bills || []).some((bill) => bill.split_group_id) &&
+      (!current.bill ||
+        (current.bill.payment_status === 'unpaid' &&
+          Number(current.bill.paid_amount || 0) === 0 &&
+          !current.bill.payment_details))
+    );
+  };
+
+  const printSplitBills = async (bills: Bill[], reservedWindow?: Window | null) => {
+    if (!onPrintBill) return;
+    const detailed = await Promise.all(
+      bills.map(async (bill) => (await api.get(`/bills/${bill.id}`)).data.bill as Bill),
+    );
+    await onPrintBill(detailed, reservedWindow);
+  };
+
   const handleCheckout = async () => {
     if (!order) return;
+    // A table that ordered per guest checks out through the pre-filled split
+    // once; dismissing it falls back to paying the whole check.
+    if (!guestSplitOffered && canSplitByGuest(order)) {
+      setGuestSplitOffered(true);
+      await handleSplitCheck();
+      return;
+    }
     setGenerating(true);
     try {
       if (order.bill) {
@@ -127,6 +165,14 @@ export default function TableCheckoutModal({
 
   const handlePrintBill = async () => {
     if (!order || !onPrintBill) return;
+    // Printing per guest needs the guest checks, so the pre-filled split opens
+    // first and its checks print once it is confirmed.
+    if (canGenerateBill && canSplitByGuest(order)) {
+      setGuestSplitOffered(true);
+      setPrintAfterSplit(true);
+      await handleSplitCheck();
+      return;
+    }
     const reservedWindow = reservePrintWindow?.();
     let windowTransferred = false;
     setPrintingBill(true);
@@ -140,11 +186,13 @@ export default function TableCheckoutModal({
         return;
       }
       setOrder(currentOrder);
-      if (
-        currentOrder.bill?.split_group_id ||
-        currentOrder.bills?.some((bill) => bill.split_group_id)
-      )
+      const splitBills = (currentOrder.bills || []).filter((bill) => bill.split_group_id);
+      if (splitBills.length > 0) {
+        windowTransferred = true;
+        await printSplitBills(splitBills, reservedWindow);
         return;
+      }
+      if (currentOrder.bill?.split_group_id) return;
 
       let targetBill = currentOrder.bill;
       if (!targetBill) {
@@ -406,6 +454,21 @@ export default function TableCheckoutModal({
                     </div>
                   </div>
                 ))}
+                {onPrintBill && (
+                  <Button
+                    variant="outline"
+                    onClick={handlePrintBill}
+                    disabled={generating || printingBill}
+                    className="w-full"
+                  >
+                    {printingBill ? (
+                      <Loader2 size={15} className="animate-spin me-1.5" />
+                    ) : (
+                      <Printer size={15} className="me-1.5" />
+                    )}
+                    {tReceipt('printBill')}
+                  </Button>
+                )}
               </div>
             )}
 
@@ -488,7 +551,10 @@ export default function TableCheckoutModal({
         <SplitCheckModal
           bill={splitBill}
           order={splitBill.order || order}
-          onClose={() => setSplitBill(null)}
+          onClose={() => {
+            setSplitBill(null);
+            setPrintAfterSplit(false);
+          }}
           onSplit={(bills) => {
             setOrder((current) => {
               if (!current) return current;
@@ -503,6 +569,13 @@ export default function TableCheckoutModal({
               };
             });
             setSplitBill(null);
+            if (printAfterSplit) {
+              setPrintAfterSplit(false);
+              setPrintingBill(true);
+              printSplitBills(bills)
+                .catch(() => toast.error(t('receiptPrintFailed')))
+                .finally(() => setPrintingBill(false));
+            }
           }}
         />
       )}

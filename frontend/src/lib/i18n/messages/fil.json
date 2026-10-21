@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Tingnan ang availability",
     "viewMore": "Tingnan pa",
     "viewLess": "Tingnan nang kaunti",
-    "splitCheckSettingDenied": "Hindi puwedeng tingnan ng account na ito ang availability ng paghahati ng check."
+    "splitCheckSettingDenied": "Hindi puwedeng tingnan ng account na ito ang availability ng paghahati ng check.",
+    "guestNumber": "Bisita {number}",
+    "sharedGuest": "Pinagsasaluhan",
+    "billToGuest": "Singilin kay",
+    "clearTable": "Alisin ang mesa"
   },
   "printTest": {
     "amt": "Halaga",
@@ -1226,7 +1230,8 @@
       "station": "Istasyon",
       "type": "Uri",
       "noPendingItems": "Walang mga nakabinbing item",
-      "end": "WAKAS"
+      "end": "WAKAS",
+      "guest": "Bisita"
     },
     "deliverySlip": {
       "title": "SLIP NG DELIVERY",

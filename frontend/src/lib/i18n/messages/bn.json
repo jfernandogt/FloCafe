@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "প্রাপ্যতা পরীক্ষা করুন",
     "viewMore": "আরও দেখুন",
     "viewLess": "কম দেখুন",
-    "splitCheckSettingDenied": "এই অ্যাকাউন্ট বিল ভাগ করার প্রাপ্যতা পরীক্ষা করতে পারে না।"
+    "splitCheckSettingDenied": "এই অ্যাকাউন্ট বিল ভাগ করার প্রাপ্যতা পরীক্ষা করতে পারে না।",
+    "guestNumber": "অতিথি {number}",
+    "sharedGuest": "ভাগ করা",
+    "billToGuest": "বিল করুন",
+    "clearTable": "টেবিল সরান"
   },
   "printTest": {
     "amt": "এএমটি",
@@ -1226,7 +1230,8 @@
       "station": "স্টেশন",
       "type": "টাইপ",
       "noPendingItems": "কোন মুলতুবি আইটেম",
-      "end": "শেষ"
+      "end": "শেষ",
+      "guest": "অতিথি"
     },
     "deliverySlip": {
       "title": "ডেলিভারি স্লিপ",

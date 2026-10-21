@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "التحقق من التوفر",
     "viewMore": "عرض المزيد",
     "viewLess": "عرض أقل",
-    "splitCheckSettingDenied": "لا يمكن لهذا الحساب التحقق من توفر تقسيم طلبات الدفع."
+    "splitCheckSettingDenied": "لا يمكن لهذا الحساب التحقق من توفر تقسيم طلبات الدفع.",
+    "guestNumber": "الضيف {number}",
+    "sharedGuest": "مشترك",
+    "billToGuest": "الفاتورة إلى",
+    "clearTable": "إزالة الطاولة"
   },
   "printTest": {
     "amt": "المبلغ",
@@ -1226,7 +1230,8 @@
       "station": "المحطة",
       "type": "النوع",
       "noPendingItems": "لا توجد بنود معلقة",
-      "end": "النهاية"
+      "end": "النهاية",
+      "guest": "الضيف"
     },
     "deliverySlip": {
       "title": "قسيمة التوصيل",

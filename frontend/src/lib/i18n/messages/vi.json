@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Kiểm tra khả năng",
     "viewMore": "Xem thêm",
     "viewLess": "Thu gọn",
-    "splitCheckSettingDenied": "Tài khoản này không thể kiểm tra khả năng chia hóa đơn."
+    "splitCheckSettingDenied": "Tài khoản này không thể kiểm tra khả năng chia hóa đơn.",
+    "guestNumber": "Khách {number}",
+    "sharedGuest": "Dùng chung",
+    "billToGuest": "Tính tiền cho",
+    "clearTable": "Bỏ chọn bàn"
   },
   "printTest": {
     "amt": "Số tiền",
@@ -1226,7 +1230,8 @@
       "station": "Khu vực",
       "type": "Loại",
       "noPendingItems": "Không có món đang chờ",
-      "end": "KẾT THÚC"
+      "end": "KẾT THÚC",
+      "guest": "Khách"
     },
     "deliverySlip": {
       "title": "PHIẾU GIAO HÀNG",

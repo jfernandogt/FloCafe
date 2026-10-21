@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Kontrollo disponueshmërinë",
     "viewMore": "Shfaq më shumë",
     "viewLess": "Shfaq më pak",
-    "splitCheckSettingDenied": "Kjo llogari nuk mund të verifikojë disponueshmërinë e ndarjes së faturës."
+    "splitCheckSettingDenied": "Kjo llogari nuk mund të verifikojë disponueshmërinë e ndarjes së faturës.",
+    "guestNumber": "Mysafiri {number}",
+    "sharedGuest": "I përbashkët",
+    "billToGuest": "Fatura për",
+    "clearTable": "Hiq tavolinën"
   },
   "printTest": {
     "amt": "Shuma",
@@ -1226,7 +1230,8 @@
       "station": "Stacioni",
       "type": "Lloji",
       "noPendingItems": "Nuk ka artikuj në pritje",
-      "end": "FUND"
+      "end": "FUND",
+      "guest": "Mysafiri"
     },
     "deliverySlip": {
       "title": "FLETË DËRGIMI",

@@ -21,6 +21,7 @@ export interface OrderItemPayload {
   quantity: number;
   addons: OrderItemAddonPayload[] | null;
   special_instructions: string | null;
+  guest_number?: number | null;
 }
 
 /** The cart-item fields a payload is built from; callers holding a staged or
@@ -28,21 +29,24 @@ export interface OrderItemPayload {
 export type OrderItemSource = Pick<
   CartItem,
   'product' | 'quantity' | 'addons' | 'special_instructions' | 'variant'
->;
+> &
+  Partial<Pick<CartItem, 'guest_number'>>;
 
 export function cartItemToOrderItem(item: OrderItemSource): OrderItemPayload {
   return {
     product_id: item.product.id,
     variant_id: item.variant?.id ?? null,
     quantity: item.quantity,
-    addons: item.addons.length > 0
-      ? item.addons.map((addon) => ({
-        id: addon.id,
-        name: addon.name,
-        price: addon.price,
-        quantity: addon.quantity || 1,
-      }))
-      : null,
+    addons:
+      item.addons.length > 0
+        ? item.addons.map((addon) => ({
+            id: addon.id,
+            name: addon.name,
+            price: addon.price,
+            quantity: addon.quantity || 1,
+          }))
+        : null,
     special_instructions: item.special_instructions || null,
+    ...(item.guest_number ? { guest_number: item.guest_number } : {}),
   };
 }

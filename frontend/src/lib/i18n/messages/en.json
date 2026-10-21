@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Check availability",
     "viewMore": "View more",
     "viewLess": "View less",
-    "splitCheckSettingDenied": "This account cannot check split-check availability."
+    "splitCheckSettingDenied": "This account cannot check split-check availability.",
+    "guestNumber": "Guest {number}",
+    "sharedGuest": "Shared",
+    "billToGuest": "Bill to",
+    "clearTable": "Clear table"
   },
   "printTest": {
     "amt": "Amt",
@@ -1226,7 +1230,8 @@
       "station": "Station",
       "type": "Type",
       "noPendingItems": "No pending items",
-      "end": "END"
+      "end": "END",
+      "guest": "Guest"
     },
     "deliverySlip": {
       "title": "DELIVERY SLIP",

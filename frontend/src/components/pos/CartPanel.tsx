@@ -17,11 +17,12 @@ import {
   Users,
   Wallet,
   StickyNote,
+  X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import api from '@/lib/api';
 import type { CustomPaymentMethod } from '@/lib/payment-methods';
-import { useCartStore } from '@/store/cart';
+import { SHARED_GUEST, effectiveGuestNumber, useCartStore } from '@/store/cart';
 import { useHeldOrdersStore } from '@/store/held-orders';
 import { useAuthStore } from '@/store/auth';
 import { usePosSettingsStore } from '@/store/pos-settings';
@@ -42,6 +43,7 @@ interface Props {
   submitting: boolean;
   onPlaceOrder: () => void;
   onShowTablePicker: () => void;
+  onClearTable?: () => void;
   onEditItem?: (item: CartItem) => void;
   variant?: 'sidebar' | 'drawer';
   existingOrder?: Order | null;
@@ -158,6 +160,7 @@ export default function CartPanel({
   submitting,
   onPlaceOrder,
   onShowTablePicker,
+  onClearTable,
   onEditItem,
   variant = 'sidebar',
   existingOrder,
@@ -245,6 +248,32 @@ export default function CartPanel({
   };
 
   const isDrawer = variant === 'drawer';
+  const guestBilling = cart.guestBilling();
+  const onlinePlatformSelected =
+    cart.orderType === 'online' && cart.onlinePlatform.trim().length > 0;
+  const lineTotal = (item: CartItem) =>
+    (cartVariantUnitPrice(item, onlinePlatformSelected) +
+      item.addons.reduce(
+        (sum, addon) => sum + (Number(addon.price) || 0) * (Number(addon.quantity) || 1),
+        0,
+      )) *
+    (Number(item.quantity) || 1);
+  const guestLabel = (guest: number) =>
+    guest === SHARED_GUEST ? t('sharedGuest') : t('guestNumber', { number: guest });
+  const seatOf = (item: CartItem) => effectiveGuestNumber(cart, item) ?? SHARED_GUEST;
+  const selectedGuest = Math.min(cart.activeGuest, cart.guestCount);
+  const guestOptions = [
+    ...Array.from({ length: cart.guestCount }, (_, index) => index + 1),
+    SHARED_GUEST,
+  ];
+  const itemGroups = guestBilling
+    ? guestOptions
+        .map((guest) => ({
+          guest,
+          items: cart.items.filter((item) => seatOf(item) === guest),
+        }))
+        .filter((group) => group.items.length > 0)
+    : [{ guest: null, items: cart.items }];
 
   return (
     <div
@@ -294,29 +323,43 @@ export default function CartPanel({
               cart.orderType === 'dine_in' &&
               tablesRequired &&
               onShowTablePicker && (
-                <button
-                  type="button"
-                  onClick={onShowTablePicker}
-                  data-testid="cart-table-button"
-                  className={`flex items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors whitespace-nowrap min-h-[38px] ${
-                    cart.tableId
-                      ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600'
-                      : 'bg-amber-50 border-amber-400 text-amber-700 hover:bg-amber-100'
-                  }`}
-                >
-                  <UtensilsCrossed size={14} />
-                  {cart.tableId
-                    ? t('tableLabel', {
-                        name: tables.find((t) => t.id === cart.tableId)?.name || cart.tableId,
-                      })
-                    : t('selectTable')}
-                  <span
-                    aria-hidden="true"
-                    className="hidden sm:inline-flex ms-1 px-1 py-0.2 rounded border border-current text-[10px] font-mono opacity-80"
+                <div className="relative flex">
+                  <button
+                    type="button"
+                    onClick={onShowTablePicker}
+                    data-testid="cart-table-button"
+                    className={`flex items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors whitespace-nowrap min-h-[38px] ${
+                      cart.tableId
+                        ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600'
+                        : 'bg-amber-50 border-amber-400 text-amber-700 hover:bg-amber-100'
+                    }`}
                   >
-                    F2
-                  </span>
-                </button>
+                    <UtensilsCrossed size={14} />
+                    {cart.tableId
+                      ? t('tableLabel', {
+                          name: tables.find((t) => t.id === cart.tableId)?.name || cart.tableId,
+                        })
+                      : t('selectTable')}
+                    <span
+                      aria-hidden="true"
+                      className="hidden sm:inline-flex ms-1 px-1 py-0.2 rounded border border-current text-[10px] font-mono opacity-80"
+                    >
+                      F2
+                    </span>
+                  </button>
+                  {cart.tableId && onClearTable && (
+                    <button
+                      type="button"
+                      onClick={onClearTable}
+                      data-testid="cart-table-clear"
+                      aria-label={t('clearTable')}
+                      title={t('clearTable')}
+                      className="absolute -top-2 -end-2 flex size-5 items-center justify-center rounded-full border border-orange-500 bg-card text-orange-600 shadow-sm transition-colors hover:bg-orange-50 dark:hover:bg-orange-950/40"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
               )}
             <div className="flex flex-1 min-w-[160px] items-center justify-between rounded-lg border border-border bg-card px-3 py-2">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -354,6 +397,32 @@ export default function CartPanel({
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {guestBilling && (
+          <div
+            data-testid="cart-guest-tabs"
+            role="tablist"
+            aria-label={t('billToGuest')}
+            className="flex gap-1 overflow-x-auto pb-1"
+          >
+            {guestOptions.map((guest) => (
+              <button
+                key={guest}
+                type="button"
+                role="tab"
+                aria-selected={selectedGuest === guest}
+                onClick={() => cart.setActiveGuest(guest)}
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  selectedGuest === guest
+                    ? 'bg-brand text-white border-brand'
+                    : 'bg-card text-muted-foreground border-border hover:text-foreground'
+                }`}
+              >
+                {guestLabel(guest)}
+              </button>
+            ))}
           </div>
         )}
 
@@ -492,6 +561,7 @@ export default function CartPanel({
                     <div key={item.id} className="flex justify-between items-center">
                       <span className="text-xs text-muted-foreground">
                         {item.quantity}× {item.product_name}
+                        {item.guest_number ? ` · ${guestLabel(item.guest_number)}` : ''}
                       </span>
                       <span className="text-xs text-muted-foreground">
                         {fmt(Number(item.total))}
@@ -511,66 +581,89 @@ export default function CartPanel({
           </div>
         ) : (
           <div className="space-y-3">
-            {cart.items.map((item) => (
-              <div
-                key={item.id}
-                data-testid="cart-item"
-                className="border-b border-border/60 pb-3 last:border-b-0 last:pb-0"
-              >
-                <div className="flex items-start gap-2">
-                  <p className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-foreground">
-                    {item.variant
-                      ? `${item.product.name} (${item.variant.name})`
-                      : item.product.name}
-                  </p>
-                  <button
-                    onClick={() => cart.removeItem(item.id)}
-                    className="touch-target -me-2 -mt-2 shrink-0 rounded-full text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/40 dark:hover:text-red-400 active:bg-red-50 dark:active:bg-red-950/40"
-                    aria-label={t('remove')}
+            {itemGroups.map((group) => (
+              <div key={group.guest ?? 'all'} className="space-y-3">
+                {group.guest !== null && (
+                  <div
+                    data-testid="cart-guest-group"
+                    className="flex items-center justify-between rounded-md bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground"
                   >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <div className="min-w-0">
-                  {item.addons.length > 0 && (
-                    <div className="mt-0.5">
-                      {item.addons.map((a) => (
-                        <p key={a.id} className="break-words text-xs text-muted-foreground">
-                          + {a.name}
-                          {(a.quantity || 1) > 1 ? ` ×${a.quantity}` : ''}{' '}
-                          {Number(a.price) > 0 && `(${fmt(Number(a.price) * (a.quantity || 1))})`}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                  {item.special_instructions && (
-                    <p className="text-xs text-muted-foreground italic mt-0.5 break-words">
-                      {item.special_instructions}
-                    </p>
-                  )}
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm text-muted-foreground">
-                    {fmt(
-                      cartVariantUnitPrice(
-                        item,
-                        cart.orderType === 'online' && cart.onlinePlatform.trim().length > 0,
-                      ),
-                    )}
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    {onEditItem && (
-                      <button
-                        onClick={() => onEditItem(item)}
-                        className="touch-target shrink-0 gap-1 rounded-full bg-amber-100 px-3 text-xs font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60 dark:active:bg-amber-950/60 transition-colors hover:bg-amber-200 active:bg-amber-200"
-                      >
-                        <SquarePen size={12} />
-                        {tCommon('edit')}
-                      </button>
-                    )}
-                    <ItemQuantityControl item={item} updateQuantity={cart.updateQuantity} />
+                    <span>{guestLabel(group.guest)}</span>
+                    <span>{fmt(group.items.reduce((sum, item) => sum + lineTotal(item), 0))}</span>
                   </div>
-                </div>
+                )}
+                {group.items.map((item) => (
+                  <div
+                    key={item.id}
+                    data-testid="cart-item"
+                    className="border-b border-border/60 pb-3 last:border-b-0 last:pb-0"
+                  >
+                    <div className="flex items-start gap-2">
+                      <p className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-foreground">
+                        {item.variant
+                          ? `${item.product.name} (${item.variant.name})`
+                          : item.product.name}
+                      </p>
+                      <button
+                        onClick={() => cart.removeItem(item.id)}
+                        className="touch-target -me-2 -mt-2 shrink-0 rounded-full text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/40 dark:hover:text-red-400 active:bg-red-50 dark:active:bg-red-950/40"
+                        aria-label={t('remove')}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    <div className="min-w-0">
+                      {item.addons.length > 0 && (
+                        <div className="mt-0.5">
+                          {item.addons.map((a) => (
+                            <p key={a.id} className="break-words text-xs text-muted-foreground">
+                              + {a.name}
+                              {(a.quantity || 1) > 1 ? ` ×${a.quantity}` : ''}{' '}
+                              {Number(a.price) > 0 &&
+                                `(${fmt(Number(a.price) * (a.quantity || 1))})`}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {item.special_instructions && (
+                        <p className="text-xs text-muted-foreground italic mt-0.5 break-words">
+                          {item.special_instructions}
+                        </p>
+                      )}
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm text-muted-foreground">
+                        {fmt(cartVariantUnitPrice(item, onlinePlatformSelected))}
+                      </p>
+                      <div className="flex items-center gap-1.5">
+                        {guestBilling && (
+                          <select
+                            aria-label={t('billToGuest')}
+                            value={seatOf(item)}
+                            onChange={(e) => cart.moveItemToGuest(item.id, Number(e.target.value))}
+                            className="min-h-9 max-w-28 rounded-full border border-border bg-card px-2 text-xs"
+                          >
+                            {guestOptions.map((guest) => (
+                              <option key={guest} value={guest}>
+                                {guestLabel(guest)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {onEditItem && (
+                          <button
+                            onClick={() => onEditItem(item)}
+                            className="touch-target shrink-0 gap-1 rounded-full bg-amber-100 px-3 text-xs font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60 dark:active:bg-amber-950/60 transition-colors hover:bg-amber-200 active:bg-amber-200"
+                          >
+                            <SquarePen size={12} />
+                            {tCommon('edit')}
+                          </button>
+                        )}
+                        <ItemQuantityControl item={item} updateQuantity={cart.updateQuantity} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>

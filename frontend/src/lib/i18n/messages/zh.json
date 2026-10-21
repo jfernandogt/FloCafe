@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "检查可用性",
     "viewMore": "查看更多",
     "viewLess": "收起",
-    "splitCheckSettingDenied": "该账号无法检查拆单可用性。"
+    "splitCheckSettingDenied": "该账号无法检查拆单可用性。",
+    "guestNumber": "客人 {number}",
+    "sharedGuest": "共享",
+    "billToGuest": "账单归属",
+    "clearTable": "清除桌位"
   },
   "printTest": {
     "amt": "金额",
@@ -1226,7 +1230,8 @@
       "station": "工作站",
       "type": "类型",
       "noPendingItems": "没有待处理条目",
-      "end": "结束"
+      "end": "结束",
+      "guest": "客人"
     },
     "deliverySlip": {
       "title": "配送单",

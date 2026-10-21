@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "उपलब्धता जाँचें",
     "viewMore": "और देखें",
     "viewLess": "कम देखें",
-    "splitCheckSettingDenied": "यह खाता बिल विभाजन की उपलब्धता जाँच नहीं सकता।"
+    "splitCheckSettingDenied": "यह खाता बिल विभाजन की उपलब्धता जाँच नहीं सकता।",
+    "guestNumber": "मेहमान {number}",
+    "sharedGuest": "साझा",
+    "billToGuest": "बिल किसे",
+    "clearTable": "टेबल हटाएँ"
   },
   "printTest": {
     "amt": "राशि",
@@ -1226,7 +1230,8 @@
       "station": "स्टेशन",
       "type": "प्रकार",
       "noPendingItems": "कोई लंबित आइटम नहीं",
-      "end": "समाप्त"
+      "end": "समाप्त",
+      "guest": "मेहमान"
     },
     "deliverySlip": {
       "title": "डिलीवरी स्लिप",

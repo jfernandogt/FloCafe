@@ -28,6 +28,12 @@ function selectableItems(order: Order | null): OrderItem[] {
   );
 }
 
+/** Guest seats the lines were ordered for, ascending; empty when the table ordered as one. */
+function orderedGuestSeats(items: OrderItem[]): number[] {
+  const seats = new Set(items.map((item) => Number(item.guest_number) || 0).filter((n) => n > 0));
+  return [...seats].sort((a, b) => a - b);
+}
+
 function clampLabel(value: string, fallback: string): string {
   return value.trim().slice(0, MAX_LABEL_LENGTH) || fallback.slice(0, MAX_LABEL_LENGTH);
 }
@@ -64,22 +70,38 @@ export function SplitCheckModal({
 
   // A split-group child is divided for a leaving guest by default; the first
   // split of an untouched check keeps the familiar all-items grid.
+  // Lines ordered per guest pre-fill one check per guest; shared lines are
+  // spread across them like an untouched check.
+  const [guestSeats] = useState(() => {
+    const seats = bill.split_group_id ? [] : orderedGuestSeats(items);
+    return seats.length >= MIN_CHECKS && seats.length <= MAX_CHECKS ? seats : [];
+  });
   const [mode, setMode] = useState<SplitMode>(
     bill.split_group_id || !canSplitTable ? 'guest' : 'table',
   );
-  const initialCount = canSplitTable
-    ? Math.min(8, maxTableChecks, Math.max(MIN_CHECKS, order.guest_count || MIN_CHECKS))
-    : MIN_CHECKS;
+  const initialCount =
+    guestSeats.length > 0
+      ? guestSeats.length
+      : canSplitTable
+        ? Math.min(8, maxTableChecks, Math.max(MIN_CHECKS, order.guest_count || MIN_CHECKS))
+        : MIN_CHECKS;
   const [count, setCount] = useState(initialCount);
   const [labels, setLabels] = useState(() =>
-    Array.from({ length: initialCount }, (_, i) => `Guest ${i + 1}`),
+    guestSeats.length > 0
+      ? guestSeats.map((seat) => t('guestNumber', { number: seat }).slice(0, MAX_LABEL_LENGTH))
+      : Array.from({ length: initialCount }, (_, i) => `Guest ${i + 1}`),
   );
   const [allocations, setAllocations] = useState<Record<number, number[]>>(() => {
     let nextSlot = 0;
     return Object.fromEntries(
       items.map((item) => {
         const slots = Array(initialCount).fill(0);
-        for (let unit = 0; unit < item.quantity; unit++) slots[nextSlot++ % initialCount]++;
+        const seatSlot = guestSeats.indexOf(Number(item.guest_number) || 0);
+        if (seatSlot >= 0) {
+          slots[seatSlot] = item.quantity;
+        } else {
+          for (let unit = 0; unit < item.quantity; unit++) slots[nextSlot++ % initialCount]++;
+        }
         return [item.id, slots];
       }),
     );

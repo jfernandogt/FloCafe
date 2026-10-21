@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "가능 여부 확인",
     "viewMore": "더 보기",
     "viewLess": "접기",
-    "splitCheckSettingDenied": "이 계정은 계산서 분할 가능 여부를 확인할 수 없습니다."
+    "splitCheckSettingDenied": "이 계정은 계산서 분할 가능 여부를 확인할 수 없습니다.",
+    "guestNumber": "손님 {number}",
+    "sharedGuest": "공유",
+    "billToGuest": "청구 대상",
+    "clearTable": "테이블 해제"
   },
   "printTest": {
     "amt": "금액",
@@ -1226,7 +1230,8 @@
       "station": "스테이션",
       "type": "유형",
       "noPendingItems": "대기 항목 없음",
-      "end": "종료"
+      "end": "종료",
+      "guest": "손님"
     },
     "deliverySlip": {
       "title": "배달전표",

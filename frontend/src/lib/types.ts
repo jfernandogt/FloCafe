@@ -255,6 +255,7 @@ export interface OrderItem {
   tax_snapshot?: TaxSnapshot | null;
   addons: { id?: number | string | null; name: string; price?: number; quantity?: number }[] | null;
   special_instructions: string | null;
+  guest_number?: number | null;
   status: 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled' | 'voided' | 'void_adjustment';
   superseded?: boolean;
   edit_version?: number;
@@ -442,4 +443,6 @@ export interface CartItem {
   addons: Addon[];
   special_instructions: string;
   variant?: ProductVariant | null;
+  /** Guest seat this line is billed to; absent for a whole-table line. */
+  guest_number?: number | null;
 }

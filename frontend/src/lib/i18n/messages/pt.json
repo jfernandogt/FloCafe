@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Verificar disponibilidade",
     "viewMore": "Ver mais",
     "viewLess": "Ver menos",
-    "splitCheckSettingDenied": "Esta conta não pode verificar a disponibilidade de divisão de conta."
+    "splitCheckSettingDenied": "Esta conta não pode verificar a disponibilidade de divisão de conta.",
+    "guestNumber": "Cliente {number}",
+    "sharedGuest": "Compartilhado",
+    "billToGuest": "Cobrar de",
+    "clearTable": "Remover mesa"
   },
   "printTest": {
     "amt": "Total",
@@ -1226,7 +1230,8 @@
       "station": "Estação",
       "type": "Tipo",
       "noPendingItems": "Sem itens pendentes",
-      "end": "FIM"
+      "end": "FIM",
+      "guest": "Cliente"
     },
     "deliverySlip": {
       "title": "COMPROVANTE DE ENTREGA",

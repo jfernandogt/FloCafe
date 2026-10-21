@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Periksa ketersediaan",
     "viewMore": "Lihat selengkapnya",
     "viewLess": "Tampilkan lebih sedikit",
-    "splitCheckSettingDenied": "Akun ini tidak dapat memeriksa ketersediaan pembagian tagihan."
+    "splitCheckSettingDenied": "Akun ini tidak dapat memeriksa ketersediaan pembagian tagihan.",
+    "guestNumber": "Tamu {number}",
+    "sharedGuest": "Bersama",
+    "billToGuest": "Tagihkan ke",
+    "clearTable": "Hapus meja"
   },
   "printTest": {
     "amt": "Jml",
@@ -1226,7 +1230,8 @@
       "station": "Stasiun",
       "type": "Jenis",
       "noPendingItems": "Tidak ada item tertunda",
-      "end": "AKHIR"
+      "end": "AKHIR",
+      "guest": "Tamu"
     },
     "deliverySlip": {
       "title": "SLIP PENGANTARAN",

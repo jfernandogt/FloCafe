@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "ตรวจสอบความพร้อม",
     "viewMore": "ดูเพิ่มเติม",
     "viewLess": "ดูน้อยลง",
-    "splitCheckSettingDenied": "บัญชีนี้ไม่สามารถตรวจสอบความพร้อมในการแบ่งบิลได้"
+    "splitCheckSettingDenied": "บัญชีนี้ไม่สามารถตรวจสอบความพร้อมในการแบ่งบิลได้",
+    "guestNumber": "แขก {number}",
+    "sharedGuest": "ใช้ร่วมกัน",
+    "billToGuest": "เรียกเก็บจาก",
+    "clearTable": "ยกเลิกโต๊ะ"
   },
   "printTest": {
     "amt": "จำนวนเงิน",
@@ -1226,7 +1230,8 @@
       "station": "สถานี",
       "type": "ประเภท",
       "noPendingItems": "ไม่มีรายการที่รอดำเนินการ",
-      "end": "สิ้นสุด"
+      "end": "สิ้นสุด",
+      "guest": "แขก"
     },
     "deliverySlip": {
       "title": "ใบส่งของ",

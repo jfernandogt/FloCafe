@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "دستیابی چیک کریں",
     "viewMore": "مزید دیکھیں",
     "viewLess": "کم دکھائیں",
-    "splitCheckSettingDenied": "یہ اکاؤنٹ بل کی تقسیم کی دستیابی چیک نہیں کر سکتا۔"
+    "splitCheckSettingDenied": "یہ اکاؤنٹ بل کی تقسیم کی دستیابی چیک نہیں کر سکتا۔",
+    "guestNumber": "مہمان {number}",
+    "sharedGuest": "مشترکہ",
+    "billToGuest": "بل برائے",
+    "clearTable": "میز ہٹائیں"
   },
   "printTest": {
     "amt": "رقم",
@@ -1226,7 +1230,8 @@
       "station": "اسٹیشن",
       "type": "قسم",
       "noPendingItems": "کوئی زیر التوا آئٹم نہیں",
-      "end": "اختتام"
+      "end": "اختتام",
+      "guest": "مہمان"
     },
     "deliverySlip": {
       "title": "ڈیلیوری سلپ",

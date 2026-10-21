@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Проверить доступность",
     "viewMore": "Показать ещё",
     "viewLess": "Свернуть",
-    "splitCheckSettingDenied": "Эта учётная запись не может проверять доступность разделения счета."
+    "splitCheckSettingDenied": "Эта учётная запись не может проверять доступность разделения счета.",
+    "guestNumber": "Гость {number}",
+    "sharedGuest": "Общее",
+    "billToGuest": "Счёт для",
+    "clearTable": "Убрать стол"
   },
   "printTest": {
     "amt": "Сумма",
@@ -1226,7 +1230,8 @@
       "station": "Станция",
       "type": "Тип",
       "noPendingItems": "Нет ожидающих позиций",
-      "end": "КОНЕЦ"
+      "end": "КОНЕЦ",
+      "guest": "Гость"
     },
     "deliverySlip": {
       "title": "НАКЛАДНАЯ ДОСТАВКИ",

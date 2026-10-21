@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Uygunluğu kontrol et",
     "viewMore": "Daha fazla göster",
     "viewLess": "Daha az göster",
-    "splitCheckSettingDenied": "Bu hesap hesap bölme uygunluğunu kontrol edemez."
+    "splitCheckSettingDenied": "Bu hesap hesap bölme uygunluğunu kontrol edemez.",
+    "guestNumber": "Misafir {number}",
+    "sharedGuest": "Ortak",
+    "billToGuest": "Faturalanacak",
+    "clearTable": "Masayı kaldır"
   },
   "printTest": {
     "amt": "Tutar",
@@ -1226,7 +1230,8 @@
       "station": "İstasyon",
       "type": "Tür",
       "noPendingItems": "Bekleyen ürün yok",
-      "end": "SON"
+      "end": "SON",
+      "guest": "Misafir"
     },
     "deliverySlip": {
       "title": "TESLİMAT MAKBUZU",

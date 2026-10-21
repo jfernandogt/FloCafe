@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "利用可否を確認",
     "viewMore": "さらに表示",
     "viewLess": "表示を減らす",
-    "splitCheckSettingDenied": "このアカウントでは伝票分割の利用可否を確認できません。"
+    "splitCheckSettingDenied": "このアカウントでは伝票分割の利用可否を確認できません。",
+    "guestNumber": "ゲスト {number}",
+    "sharedGuest": "共有",
+    "billToGuest": "請求先",
+    "clearTable": "テーブルを解除"
   },
   "printTest": {
     "amt": "金額",
@@ -1226,7 +1230,8 @@
       "station": "ステーション",
       "type": "種別",
       "noPendingItems": "保留中の商品はありません",
-      "end": "終了"
+      "end": "終了",
+      "guest": "ゲスト"
     },
     "deliverySlip": {
       "title": "配達伝票",

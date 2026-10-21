@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "Verifica disponibilità",
     "viewMore": "Vedi altro",
     "viewLess": "Mostra meno",
-    "splitCheckSettingDenied": "Questo account non può verificare la disponibilità della suddivisione del conto."
+    "splitCheckSettingDenied": "Questo account non può verificare la disponibilità della suddivisione del conto.",
+    "guestNumber": "Ospite {number}",
+    "sharedGuest": "Condiviso",
+    "billToGuest": "Addebita a",
+    "clearTable": "Rimuovi tavolo"
   },
   "printTest": {
     "amt": "Importo",
@@ -1226,7 +1230,8 @@
       "station": "Postazione",
       "type": "Tipo",
       "noPendingItems": "Nessun articolo in attesa",
-      "end": "FINE"
+      "end": "FINE",
+      "guest": "Ospite"
     },
     "deliverySlip": {
       "title": "RICEVUTA DI CONSEGNA",

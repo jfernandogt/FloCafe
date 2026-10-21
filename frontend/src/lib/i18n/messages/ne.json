@@ -1142,7 +1142,11 @@
     "splitCheckCheckAvailability": "उपलब्धता जाँच गर्नुहोस्",
     "viewMore": "थप हेर्नुहोस्",
     "viewLess": "कम हेर्नुहोस्",
-    "splitCheckSettingDenied": "यो खाताले बिल विभाजनको उपलब्धता जाँच गर्न सक्दैन।"
+    "splitCheckSettingDenied": "यो खाताले बिल विभाजनको उपलब्धता जाँच गर्न सक्दैन।",
+    "guestNumber": "पाहुना {number}",
+    "sharedGuest": "साझा",
+    "billToGuest": "बिल कसलाई",
+    "clearTable": "टेबल हटाउनुहोस्"
   },
   "printTest": {
     "amt": "रकम",
@@ -1226,7 +1230,8 @@
       "station": "स्टेशन",
       "type": "प्रकार",
       "noPendingItems": "कुनै पेन्डिङ वस्तु छैन",
-      "end": "समाप्त"
+      "end": "समाप्त",
+      "guest": "पाहुना"
     },
     "deliverySlip": {
       "title": "डेलिभरी स्लिप",
