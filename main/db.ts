@@ -7438,6 +7438,15 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
       `);
     },
   },
+  {
+    version: 116,
+    name: 'add_order_item_guest_number',
+    up: () => {
+      if (!getColumns(db, 'order_items').includes('guest_number')) {
+        db.exec(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER DEFAULT NULL`);
+      }
+    },
+  },
 ];
 
 function syncBackupBeforeMigration(fromVersion: number, toVersion: number): void {

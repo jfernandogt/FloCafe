@@ -183,3 +183,22 @@ export function validateProductQuantity(
     );
   }
 }
+
+export const MAX_GUEST_NUMBER = 99;
+
+/** A line's guest seat; absent means the line belongs to the whole table. */
+export function resolveGuestNumber(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_GUEST_NUMBER
+  ) {
+    throw Object.assign(
+      new Error(`Invalid guest_number: must be an integer between 1 and ${MAX_GUEST_NUMBER}`),
+      { statusCode: 400, diagnosticCode: 'guest_number_invalid' },
+    );
+  }
+  return value;
+}

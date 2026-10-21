@@ -34,6 +34,7 @@ export const PRINT_CONCEPT_IDS = [
   'print.kot.type',
   'print.kot.noPendingItems',
   'print.kot.end',
+  'print.kot.guest',
   'print.deliverySlip.title',
   'print.deliverySlip.banner',
   'print.deliverySlip.address',

@@ -125,6 +125,16 @@ export async function printWebBill(
   opts: WebPrintOptions = {},
   reservedWindow?: Window | null,
 ): Promise<PrintWarning[]> {
+  return printWebBills([bill], tenant, opts, reservedWindow);
+}
+
+/** Print several bills in one print dialog, each bill on its own page. */
+export async function printWebBills(
+  bills: Bill[],
+  tenant: ReceiptTenant,
+  opts: WebPrintOptions = {},
+  reservedWindow?: Window | null,
+): Promise<PrintWarning[]> {
   const languages = resolvePrintLanguages(opts);
 
   // 1. Open popup window synchronously to maintain transient user activation
@@ -150,7 +160,10 @@ export async function printWebBill(
       message: `Receipt language "${language}" could not be loaded, so English labels were used. Check the locale bundle and retry.`,
       kind: 'locale' as const,
     }));
-    html = generateBillHtml(bill, tenant, { ...opts, languages });
+    html =
+      bills.length === 1
+        ? generateBillHtml(bills[0], tenant, { ...opts, languages })
+        : generateBillsHtml(bills, tenant, { ...opts, languages });
   } catch (error) {
     if (!printWindow.closed) printWindow.close();
     throw error;
@@ -238,6 +251,77 @@ export function generateBillHtml(
   tenant: ReceiptTenant,
   opts: WebPrintOptions = {},
 ): string {
+  const page = renderBillPage(bill, tenant, opts);
+  return `<!DOCTYPE html>
+<html lang="${page.localeTag}" dir="${page.dir}">
+<head>
+  <meta charset="utf-8">
+  <title>${page.title}</title>
+  <style>
+    ${page.styles}
+    @media print {
+      .no-print { display: none !important; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  ${page.container}
+
+  <div class="no-print" style="text-align:center;margin-top:20px;">
+    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;cursor:pointer;">${escapeHtml(page.printLabel)}</button>
+  </div>
+</body>
+</html>
+  `;
+}
+
+/** One HTML document holding several bills, each starting on a new page. */
+export function generateBillsHtml(
+  bills: Bill[],
+  tenant: ReceiptTenant,
+  opts: WebPrintOptions = {},
+): string {
+  const pages = bills.map((bill) => renderBillPage(bill, tenant, opts));
+  const first = pages[0];
+  if (!first) return '';
+  return `<!DOCTYPE html>
+<html lang="${first.localeTag}" dir="${first.dir}">
+<head>
+  <meta charset="utf-8">
+  <title>${pages.map((page) => page.title).join(' · ')}</title>
+  <style>
+    ${first.styles}
+    .bill-page + .bill-page { break-before: page; page-break-before: always; }
+    @media print {
+      .no-print { display: none !important; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  ${pages.map((page) => `<div class="bill-page">\n  ${page.container}\n  </div>`).join('\n  ')}
+
+  <div class="no-print" style="text-align:center;margin-top:20px;">
+    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;cursor:pointer;">${escapeHtml(first.printLabel)}</button>
+  </div>
+</body>
+</html>
+  `;
+}
+
+function renderBillPage(
+  bill: Bill,
+  tenant: ReceiptTenant,
+  opts: WebPrintOptions,
+): {
+  localeTag: string;
+  dir: string;
+  title: string;
+  styles: string;
+  container: string;
+  printLabel: string;
+} {
   const {
     paperSize = 'thermal58',
     includeTaxId = false,
@@ -340,21 +424,7 @@ export function generateBillHtml(
 
   const hasTax = totals?.tax != null || (breakdown != null && breakdown.lines.length > 0);
 
-  return `<!DOCTYPE html>
-<html lang="${localeTag}" dir="${dir}">
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(invoiceNumberLabel)} ${escapeHtml(meta?.invoiceNumber.text ?? '')}</title>
-  <style>
-    ${styles}
-    @media print {
-      .no-print { display: none !important; }
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    }
-  </style>
-</head>
-<body>
-  <div class="bill-container">
+  const container = `<div class="bill-container">
     ${messages?.reprintBanner ? `<div class="reprint-banner">${escapeHtml(messages.reprintBanner.primary)}</div>` : ''}
     ${messages?.onlineOrderBanner ? `<div class="online-order-banner">${escapeHtml(messages.onlineOrderBanner.label.primary)}${messages.onlineOrderBanner.platform.text ? `<div class="online-order-detail">${escapeHtml(messages.onlineOrderBanner.platform.text)}</div>` : ''}${messages.onlineOrderBanner.externalOrderId.text ? `<div class="online-order-detail">#${escapeHtml(messages.onlineOrderBanner.externalOrderId.text)}</div>` : ''}</div>` : ''}
     <!-- Header -->
@@ -486,14 +556,16 @@ export function generateBillHtml(
       ${hasTax ? `<p>${escapeHtml(L.taxIncluded)}</p>` : ''}
       <p class="powered-by">${escapeHtml(RECEIPT_BRANDING_NAME)}</p>
     </div>
-  </div>
+  </div>`;
 
-  <div class="no-print" style="text-align:center;margin-top:20px;">
-    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;cursor:pointer;">${escapeHtml(L.printBill)}</button>
-  </div>
-</body>
-</html>
-  `;
+  return {
+    localeTag,
+    dir,
+    title: `${escapeHtml(invoiceNumberLabel)} ${escapeHtml(meta?.invoiceNumber.text ?? '')}`,
+    styles,
+    container,
+    printLabel: L.printBill,
+  };
 }
 
 // Helpers

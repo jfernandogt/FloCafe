@@ -2948,6 +2948,20 @@ function preparePaymentBatch(
   if (replay) {
     return { bill, prepared: [], existingPayments, effectiveCustomerId, idempotentReplay: true };
   }
+  if (getSettingValue('card_transaction_id_required') === 'true') {
+    resolvedPayments.forEach((payment, index) => {
+      if (
+        payment.method === 'card' &&
+        payment.payment_method_id === undefined &&
+        payment.transaction_id === undefined
+      ) {
+        throw paymentValidationError(
+          `Card transaction_id is required at line ${index + 1}`,
+          'card_transaction_id_required',
+        );
+      }
+    });
+  }
   const seenTransactionKeys = new Set<string>();
   for (const key of requestTransactionKeys) {
     if (key && (seenTransactionKeys.has(key) || existingTransactionKeys.has(key))) {

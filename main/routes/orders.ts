@@ -58,6 +58,7 @@ import {
   validateDeliveryNote,
   resolveExpectedPaymentMethod,
   resolveExpectedPaymentMethodIdentity,
+  resolveGuestNumber,
 } from './orders-validation';
 import { hasPermission, requirePermission } from '../services/authorization';
 import { ROLE_ACCESS, hasRole } from '../../shared/role-permissions';
@@ -833,6 +834,7 @@ interface OrderItemInput {
   variant_selection?: unknown;
   modifier_selection?: unknown;
   special_instructions?: string | null;
+  guest_number?: number | null;
   recipe_snapshot?: unknown;
   inventory_deducted_quantity?: number;
   inventory_target_product_id?: string | null;
@@ -868,8 +870,8 @@ function insertOrderItems(
   const insertItem = db.prepare(`
   INSERT INTO order_items (order_id, product_id, variant_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity, inventory_product_id, inventory_variant_id,
     subtotal, tax_amount, tax_breakdown, tax_snapshot, tax_type, discount_amount, total, variant_selection,
-    modifier_selection, special_instructions, recipe_snapshot, status, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    modifier_selection, special_instructions, guest_number, recipe_snapshot, status, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
   const insertedItemIds: (number | bigint)[] = [];
@@ -989,6 +991,7 @@ function insertOrderItems(
           : JSON.stringify(item.variant_selection || null),
       JSON.stringify(item.modifier_selection || null),
       item.special_instructions || null,
+      resolveGuestNumber(item.guest_number),
       recipeSnapshot ? JSON.stringify(recipeSnapshot) : null,
       initialStatus,
       itemCreatedAt,
@@ -1048,6 +1051,7 @@ interface OrderItemRow {
   unit_price: number;
   discount_amount?: number | null;
   special_instructions: string | null;
+  guest_number?: number | null;
   inventory_deducted_quantity: number;
   inventory_product_id: string | null;
   inventory_variant_id: string | null;
@@ -1700,8 +1704,8 @@ router.post(
         const insertItem = db.prepare(`
         INSERT INTO order_items (order_id, product_id, variant_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity, inventory_product_id, inventory_variant_id,
           subtotal, tax_amount, tax_breakdown, tax_snapshot, tax_type, discount_amount, total, variant_selection,
-          modifier_selection, special_instructions, recipe_snapshot, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+          modifier_selection, special_instructions, guest_number, recipe_snapshot, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
       `);
 
         for (const item of items) {
@@ -1804,6 +1808,7 @@ router.post(
               : JSON.stringify(item.variant_selection || null),
             JSON.stringify(item.modifier_selection || null),
             item.special_instructions || null,
+            resolveGuestNumber(item.guest_number),
             recipeSnapshot ? JSON.stringify(recipeSnapshot) : null,
             itemCreatedAt,
             itemCreatedAt,
@@ -4638,6 +4643,7 @@ router.patch(
           } else {
             newItem = { ...replacement };
           }
+          newItem.guest_number = oldItem.guest_number ?? null;
 
           if (isStartedQuantityIncrease) {
             superseded = false;

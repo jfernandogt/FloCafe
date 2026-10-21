@@ -858,6 +858,8 @@ export interface KotItemSnapshot {
   readonly quantity: number;
   readonly addons: readonly KotAddonSnapshot[];
   readonly specialInstructions: string;
+  /** Guest seat the line is billed to, when the table orders per guest. */
+  readonly guestNumber?: number | null;
 }
 
 /** The order behind the ticket (order number, canonical timestamp, table, type, optional customer). */
@@ -916,6 +918,7 @@ export interface KotItemsBlock {
     readonly name: DirectionalText;
     readonly addons: readonly KotAddonValue[];
     readonly specialInstructions: DirectionalText | null;
+    readonly guest?: { readonly label: SemanticLabel; readonly number: number };
   }[];
 }
 
@@ -1555,7 +1558,11 @@ function isKotDocumentBlock(value: unknown): value is KotDocumentBlock {
           isDirectionalText(addon) &&
           (addon.quantity === undefined || isFiniteNumber(addon.quantity)),
       ) &&
-      isOptionalDirectionalText(row.specialInstructions),
+      isOptionalDirectionalText(row.specialInstructions) &&
+      (row.guest === undefined ||
+        (isRecord(row.guest) &&
+          isSemanticLabel(row.guest.label) &&
+          isFiniteNumber(row.guest.number))),
   );
 }
 
@@ -1648,6 +1655,14 @@ export function buildKotDocument(printData: KotPrintData, printContext: PrintCon
               ),
           ),
           specialInstructions: optionalDirectional(item?.specialInstructions, base),
+          ...(Number.isInteger(item?.guestNumber) && Number(item?.guestNumber) > 0
+            ? {
+                guest: Object.freeze({
+                  label: resolveSemanticLabel(labels, 'print.kot.guest'),
+                  number: Number(item.guestNumber),
+                }),
+              }
+            : {}),
         }),
       ),
     ),

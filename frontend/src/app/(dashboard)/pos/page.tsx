@@ -19,7 +19,6 @@ import type {
   Order,
   CartItem,
 } from '@/lib/types';
-import { cartItemToOrderItem } from '@/lib/cart-order-item';
 import { useConfirm } from '@/hooks/use-confirm';
 import { Drawer, DrawerContent, DrawerTrigger } from '@/components/ui/drawer';
 
@@ -117,7 +116,12 @@ interface PrepaidAttempt {
 }
 
 interface PrepaidPaymentRequest {
-  payments: Array<{ method: string; payment_method_id?: number; amount: number }>;
+  payments: Array<{
+    method: string;
+    payment_method_id?: number;
+    amount: number;
+    transaction_id?: string;
+  }>;
   customer_id: string | number | null;
 }
 
@@ -196,13 +200,20 @@ const parsePrepaidPaymentRequest = (serialized: string): PrepaidPaymentRequest |
       const payment = line as Record<string, unknown>;
       const keys = Object.keys(payment).sort().join(',');
       if (
-        (keys !== 'amount,method' && keys !== 'amount,method,payment_method_id') ||
+        ![
+          'amount,method',
+          'amount,method,payment_method_id',
+          'amount,method,transaction_id',
+          'amount,method,payment_method_id,transaction_id',
+        ].includes(keys) ||
         typeof payment.method !== 'string' ||
         payment.method.length === 0 ||
         typeof payment.amount !== 'number' ||
         !Number.isFinite(payment.amount) ||
         payment.amount <= 0 ||
-        (payment.payment_method_id !== undefined && typeof payment.payment_method_id !== 'number')
+        (payment.payment_method_id !== undefined &&
+          typeof payment.payment_method_id !== 'number') ||
+        (payment.transaction_id !== undefined && typeof payment.transaction_id !== 'string')
       )
         return null;
       payments.push({
@@ -211,6 +222,9 @@ const parsePrepaidPaymentRequest = (serialized: string): PrepaidPaymentRequest |
           ? { payment_method_id: payment.payment_method_id as number }
           : {}),
         amount: payment.amount,
+        ...(payment.transaction_id !== undefined
+          ? { transaction_id: payment.transaction_id as string }
+          : {}),
       });
     }
     return { payments, customer_id: record.customer_id as string | number | null };
@@ -699,6 +713,7 @@ export default function POSPage() {
       payment_method_unavailable: t('paymentMethodUnavailable'),
       payment_input_invalid: t('paymentInputInvalid'),
       cash_session_required: tExpenses('cashSessionClosed'),
+      card_transaction_id_required: t('cardTransactionIdMissing'),
     };
     const confirmedNotApplied = failure.trusted && failure.outcome === 'not_applied';
     const expectedRejection =
@@ -786,7 +801,7 @@ export default function POSPage() {
     currentTenant?.currency || '',
     getCountryByCode(currentTenant?.country ?? '')?.locale,
   );
-  const { printBill, printKot } = usePrinterStore();
+  const { printBill, printBills, printKot } = usePrinterStore();
   const billingIsPrepaid = billingType === 'prepaid';
   const shouldTakePaymentNow = billingIsPrepaid;
 
@@ -873,14 +888,20 @@ export default function POSPage() {
     return data.bill as Bill;
   };
 
-  const printBillForTenant = async (bill: Bill, force = false, reservedWindow?: Window | null) => {
+  const printBillForTenant = async (
+    bill: Bill | Bill[],
+    force = false,
+    reservedWindow?: Window | null,
+  ) => {
     if (!currentTenant || (!force && !autoPrintBill)) {
       if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
       return;
     }
 
     try {
-      const printWarnings = await printBill(bill, currentTenant, undefined, reservedWindow);
+      const printWarnings = Array.isArray(bill)
+        ? await printBills(bill, currentTenant, undefined, reservedWindow)
+        : await printBill(bill, currentTenant, undefined, reservedWindow);
       showPrintWarningsToast(printWarnings);
     } catch (err) {
       // Non-fatal: print failure should not block the checkout flow.
@@ -1023,6 +1044,12 @@ export default function POSPage() {
           .get('/settings/kot_printing_enabled')
           .then((res) => setKotPrintingEnabled(res.data.setting?.value !== 'false'))
           .catch(() => {});
+        api
+          .get('/settings/split_checks_enabled')
+          .then((res) =>
+            useCartStore.getState().setGuestBillingEnabled(res.data.setting?.value === 'true'),
+          )
+          .catch(() => {});
 
         // 2. Fetch other menu data
         const requests: Promise<{ data: Record<string, unknown> }>[] = [
@@ -1160,7 +1187,7 @@ export default function POSPage() {
 
       if (pendingOrder) {
         // Add new items to an existing order with a durable retry key.
-        const newItems = cart.items.map(cartItemToOrderItem);
+        const newItems = cart.orderItems();
         const specialInstructions = cart.orderNotes || undefined;
         const itemFingerprint = buildAppendItemsFingerprint(
           pendingOrder.id,
@@ -1258,7 +1285,7 @@ export default function POSPage() {
           delivery_note: cart.orderType === 'delivery' ? cart.deliveryNote || undefined : undefined,
           waived_charge_ids: Array.from(cart.waivedChargeIds),
           opted_in_charge_ids: Array.from(cart.optedInChargeIds),
-          items: cart.items.map(cartItemToOrderItem),
+          items: cart.orderItems(),
         };
         const orderFingerprint = JSON.stringify(orderPayload);
         const priorOrderAttempt = readPostpaidAttempt();
@@ -1431,13 +1458,14 @@ export default function POSPage() {
     const isPrepaidCheckout = shouldTakePaymentNow;
     setShowPrepaidCheckout(false);
     setSubmitting(true);
-    const orderItems = cart.items.map(cartItemToOrderItem);
+    const orderItems = cart.orderItems();
     let paymentLines = payments
       .filter((p) => p.amount > 0)
       .map((p) => ({
         method: p.method,
         ...(p.payment_method_id !== undefined ? { payment_method_id: p.payment_method_id } : {}),
         amount: p.amount,
+        ...(p.transaction_id !== undefined ? { transaction_id: p.transaction_id } : {}),
       }));
     if (walletAmount > 0) paymentLines.push({ method: 'wallet', amount: walletAmount });
     const paymentCustomerId: string | number | null = cart.customerId ?? null;
@@ -1953,6 +1981,15 @@ export default function POSPage() {
     }
   };
 
+  // Releasing the table also leaves add-items mode, so the cart cannot append to
+  // the previous table's order.
+  const handleClearTable = () => {
+    const cartCustomerWasInherited = cart.customerSource === 'reservation';
+    cart.setTableId(null);
+    if (cartCustomerWasInherited) cart.setCustomer(null);
+    setPendingOrder(null);
+  };
+
   const handleSelectAvailableTable = (
     tableId: string,
     customer?: { id: string; name: string; phone: string } | null,
@@ -2075,7 +2112,7 @@ export default function POSPage() {
     setSubmitting(true);
     const operationId = createOperationReference();
     try {
-      const items = cart.items.map(cartItemToOrderItem);
+      const items = cart.orderItems();
       const specialInstructions = order.special_instructions || undefined;
       const fingerprint = buildAppendItemsFingerprint(order.id, items, specialInstructions);
       const storage = getAppendAttemptStorage();
@@ -2177,6 +2214,7 @@ export default function POSPage() {
     submitting,
     onPlaceOrder: handlePlaceOrder,
     onShowTablePicker: () => setShowTablePicker(true),
+    onClearTable: handleClearTable,
     onEditItem: setEditingCartItem,
     existingOrder: pendingOrder,
   };

@@ -139,6 +139,15 @@ interface PrinterState {
     tenant: ReceiptTenant,
     opts?: ReceiptOptions,
     reservedWindow?: Window | null,
+    /** Bills printed together, one per page, when the browser path is taken. */
+    browserBatch?: Bill[],
+  ) => Promise<PrintWarning[]>;
+  /** Prints each bill: one browser document with a page per bill, or one ticket each. */
+  printBills: (
+    bills: Bill[],
+    tenant: ReceiptTenant,
+    opts?: ReceiptOptions,
+    reservedWindow?: Window | null,
   ) => Promise<PrintWarning[]>;
   printTaxBill: (
     bill: Bill,
@@ -209,7 +218,7 @@ export const usePrinterStore = create<PrinterState>()(
         await printerService.disconnect();
       },
 
-      printBill: async (bill, tenant, opts, reservedWindow) => {
+      printBill: async (bill, tenant, opts, reservedWindow, browserBatch) => {
         set({ lastError: null });
         let windowTransferred = false;
         try {
@@ -261,10 +270,10 @@ export const usePrinterStore = create<PrinterState>()(
           const rasterBillTemplate = resolveCoreBillTemplate(billTemplate, billTemplateSource);
 
           const executeBrowserPrint = async (): Promise<PrintWarning[]> => {
-            const { printWebBill } = await import('@/lib/printer/web-print');
+            const { printWebBills } = await import('@/lib/printer/web-print');
             windowTransferred = true;
-            const browserWarnings = await printWebBill(
-              bill,
+            const browserWarnings = await printWebBills(
+              browserBatch ?? [bill],
               tenant,
               {
                 paperSize: printerPaperSize,
@@ -477,6 +486,36 @@ export const usePrinterStore = create<PrinterState>()(
           set({ lastError: (err as Error).message });
           throw err;
         }
+      },
+
+      printBills: async (bills, tenant, opts, reservedWindow) => {
+        if (bills.length <= 1) {
+          if (bills.length === 1) return get().printBill(bills[0], tenant, opts, reservedWindow);
+          if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+          return [];
+        }
+        const hw = get().hardwarePrinter;
+        if (!(hw && get().printMethod === 'escpos')) {
+          await printerService.awaitPendingReconnect();
+          if (
+            get().printMethod === 'browser' ||
+            (!hw && !printerService.isConnected && get().printMethod === 'escpos')
+          ) {
+            return get().printBill(bills[0], tenant, opts, reservedWindow, bills);
+          }
+        }
+        const warnings: PrintWarning[] = [];
+        for (const [index, bill] of bills.entries()) {
+          warnings.push(
+            ...(await get().printBill(
+              bill,
+              tenant,
+              opts,
+              index === 0 ? reservedWindow : undefined,
+            )),
+          );
+        }
+        return warnings;
       },
 
       printTaxBill: async (bill, tenant, opts) => {

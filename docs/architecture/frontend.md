@@ -158,6 +158,26 @@ racing lookups are ignored by lookup id, rapid clicks open at most one allocator
 explicit split-opening request is in flight competing payment and split mutations are disabled until
 it finally releases.
 
+### Dine-in orders can be billed per guest
+
+With `split_checks_enabled` on, a dine-in cart with two or more guests shows guest tabs. New lines
+go to the selected guest (or to the shared tab), each line can be moved between guests, and the
+cart groups lines by guest with a subtotal per guest. The guest is part of the cart line identity,
+so the same product for two guests stays on two lines. Assignments survive edits to the guest
+count and order type: a line whose guest no longer exists shows and is sent as shared, and no line
+carries a guest once the cart leaves dine-in or drops below two guests.
+
+Each line is sent as `guest_number` and stored on `order_items.guest_number`; the kitchen ticket
+stays one ticket and prints the guest under each line. Checks are still created only at checkout,
+because items cannot change after a split: the first checkout of a table that ordered for two or
+more guests opens `SplitCheckModal` with one check per guest, and shared lines are spread across
+them. Closing that allocator lets the next checkout pay the whole check.
+
+Printing the bill of such a table opens the same pre-filled allocator and prints the guest checks
+once it is confirmed; a table that is already split prints all of its checks. Several bills print
+as one browser document with a page per bill (`generateBillsHtml`), or as one thermal ticket per
+bill, through `usePrinterStore.printBills`.
+
 ### Add-on groups have one editor
 
 Add-on groups are managed only in Products, on the tab selected by `/products?tab=addons`. The

@@ -360,6 +360,7 @@ export function buildFrontendKotDocument(
             : {}),
         })),
         specialInstructions: String(item.special_instructions ?? ''),
+        guestNumber: item.guest_number ?? null,
       })),
   };
   const printContext: PrintContext = {
