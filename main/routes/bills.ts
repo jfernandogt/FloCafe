@@ -2785,12 +2785,17 @@ function validatePaymentFields(payment: PaymentInput, index: number, currency: s
     ['notes', 1024],
   ] as const) {
     const value = payment[field];
-    if (
-      value !== undefined &&
-      (typeof value !== 'string' ||
-        value.length > maxLength ||
-        (field === 'transaction_id' && value.trim() === ''))
-    ) {
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || value.length > maxLength) {
+      throw paymentValidationError(`${field} is invalid or too long`, 'payment_input_invalid');
+    }
+    if (field === 'transaction_id' && value.trim() === '') {
+      if (payment.method === 'card' && getSettingValue('card_transaction_id_required') === 'true') {
+        throw paymentValidationError(
+          `Card transaction_id is required at line ${index + 1}`,
+          'card_transaction_id_required',
+        );
+      }
       throw paymentValidationError(`${field} is invalid or too long`, 'payment_input_invalid');
     }
   }
@@ -2889,8 +2894,12 @@ function preparePaymentBatch(
   const currency = getTenantCurrency();
   const minorFactor = getCurrencyMinorUnitFactor(currency);
   payments.forEach((payment, index) => validatePaymentFields(payment, index, currency));
-  const resolvedPayments = payments.map((payment, index) => {
-    if (PAYMENT_METHODS.has(payment.method)) return payment;
+  const resolvedPayments = payments.map((payment, index): PaymentInput => {
+    if (PAYMENT_METHODS.has(payment.method)) {
+      if (payment.payment_method_id === undefined) return payment;
+      const { payment_method_id: _ignored, ...builtInPayment } = payment;
+      return builtInPayment;
+    }
     const configured =
       payment.method === 'custom'
         ? (db
@@ -3003,6 +3012,20 @@ function preparePaymentBatch(
   );
   if (replay) {
     return { bill, prepared: [], existingPayments, effectiveCustomerId, idempotentReplay: true };
+  }
+  if (getSettingValue('card_transaction_id_required') === 'true') {
+    resolvedPayments.forEach((payment, index) => {
+      if (
+        payment.method === 'card' &&
+        payment.payment_method_id === undefined &&
+        (typeof payment.transaction_id !== 'string' || payment.transaction_id.trim() === '')
+      ) {
+        throw paymentValidationError(
+          `Card transaction_id is required at line ${index + 1}`,
+          'card_transaction_id_required',
+        );
+      }
+    });
   }
   const seenTransactionKeys = new Set<string>();
   for (const key of requestTransactionKeys) {

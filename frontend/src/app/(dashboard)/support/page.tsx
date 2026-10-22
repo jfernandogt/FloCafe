@@ -103,6 +103,7 @@ const HELP_DISPLAY_CODES = new Set([
   'idempotency_conflict',
   'payment_method_unavailable',
   'payment_input_invalid',
+  'card_transaction_id_required',
   'charge_required',
   'bill_not_found',
   'split_check',
