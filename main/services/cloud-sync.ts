@@ -41,6 +41,16 @@ const OUTBOX_INTERVAL_MS = 15_000;
 const COMMAND_POLL_INTERVAL_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 
+export class CloudRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'CloudRequestError';
+  }
+}
+
 function requestSignal(signal?: AbortSignal): AbortSignal {
   return signal
     ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
@@ -1409,8 +1419,12 @@ export class CloudSyncService {
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     throwIfRequestAborted(signal);
     if (this.cloudDeletionInProgress) throw new Error('Cloud deletion in progress');
-    if (!res.ok)
-      throw new Error(String(data.error || `Verification request failed (${res.status})`));
+    if (!res.ok) {
+      throw new CloudRequestError(
+        String(data.error || `Verification request failed (${res.status})`),
+        res.status,
+      );
+    }
     this.upsertSettings({
       cloud_email_verified: data.verified ? 'true' : 'false',
       cloud_email_verification_sent_at:
@@ -2495,6 +2509,9 @@ export class CloudSyncService {
           transport: string;
         }>;
         if (rows.length === 0) return;
+
+        const { isTelemetrySuppressed } = require('./telemetry') as typeof import('./telemetry');
+        if (isTelemetrySuppressed()) return;
 
         for (const row of rows) {
           if (this.cloudDeletionInProgress || this.shutdownRequested) return;
@@ -3648,11 +3665,19 @@ export class CloudSyncService {
 
     const db = getDatabase();
     const orderIds = orders.map((o) => o.id);
-    const orderPlaceholders = orderIds.map(() => '?').join(',');
+    const CHUNK_SIZE = 400;
 
-    const rawItems = db
-      .prepare(`SELECT * FROM order_items WHERE order_id IN (${orderPlaceholders}) ORDER BY id ASC`)
-      .all(...orderIds) as OrderItemSnapshotSource[];
+    const rawItems: OrderItemSnapshotSource[] = [];
+    for (let offset = 0; offset < orderIds.length; offset += CHUNK_SIZE) {
+      const chunk = orderIds.slice(offset, offset + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      rawItems.push(
+        ...(db
+          .prepare(`SELECT * FROM order_items WHERE order_id IN (${placeholders}) ORDER BY id ASC`)
+          .all(...chunk) as OrderItemSnapshotSource[]),
+      );
+    }
+
     const parsedItems = attachEffectiveAddons(db, rawItems.map(parseItemJson));
     const itemsByOrderId = new Map<string, unknown[]>();
     for (const item of parsedItems) {
@@ -3670,18 +3695,28 @@ export class CloudSyncService {
     );
     const tableMap = new Map<string, TableSnapshotSource>();
     if (tableIds.length > 0) {
-      const tablePlaceholders = tableIds.map(() => '?').join(',');
-      const tableRows = db
-        .prepare(`SELECT * FROM tables WHERE id IN (${tablePlaceholders})`)
-        .all(...tableIds) as TableSnapshotSource[];
-      for (const table of tableRows) {
-        tableMap.set(String(table.id), table);
+      for (let offset = 0; offset < tableIds.length; offset += CHUNK_SIZE) {
+        const chunk = tableIds.slice(offset, offset + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        const tableRows = db
+          .prepare(`SELECT * FROM tables WHERE id IN (${placeholders})`)
+          .all(...chunk) as TableSnapshotSource[];
+        for (const table of tableRows) {
+          tableMap.set(String(table.id), table);
+        }
       }
     }
 
-    const billRows = db
-      .prepare(`SELECT * FROM bills WHERE order_id IN (${orderPlaceholders}) ORDER BY id ASC`)
-      .all(...orderIds) as BillSnapshotSource[];
+    const billRows: BillSnapshotSource[] = [];
+    for (let offset = 0; offset < orderIds.length; offset += CHUNK_SIZE) {
+      const chunk = orderIds.slice(offset, offset + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      billRows.push(
+        ...(db
+          .prepare(`SELECT * FROM bills WHERE order_id IN (${placeholders}) ORDER BY id ASC`)
+          .all(...chunk) as BillSnapshotSource[]),
+      );
+    }
     const billsByOrderId = new Map<string, BillSnapshotSource[]>();
     for (const bill of billRows) {
       const key = String(bill.order_id);

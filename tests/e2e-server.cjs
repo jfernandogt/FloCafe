@@ -32,6 +32,7 @@ process.env.FLO_AUTH_RATE_LIMIT_MAX = '1000';
 process.env.FLO_SETTINGS_READ_RATE_LIMIT_MAX = '100000';
 process.env.FLO_SETTINGS_WRITE_RATE_LIMIT_MAX = '1000';
 process.env.FLO_WHATSAPP_SOCKET_DISABLED = '1';
+process.env.FLO_MATRIX_OFFLINE = '1';
 process.env.NODE_ENV = 'test';
 
 const originalLoad = Module._load;
@@ -65,6 +66,7 @@ const {
 } = require('../dist/main/services/whatsapp');
 const { startStandaloneServers } = require('../dist/main/standalone-startup');
 const flatRatePackData = require('./fixtures/synthetic-flat-rate-pack.json');
+const officialIndiaPackData = require('./fixtures/legacy-tax-packs/official-india.json');
 // Country/currency stay TH/THB (this fixture's configured business country)
 // so getActiveCountryPack('TH') actually resolves this pack.
 const testTaxPack = {
@@ -236,6 +238,7 @@ function seedPosFixture() {
     );
   }
   installAndActivateTaxPack(db, testTaxPack);
+  installAndActivateTaxPack(db, officialIndiaPackData);
   db.prepare(
     'INSERT INTO categories (id, name, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
   ).run('e2e-category', 'E2E Menu', 1, createdAt, createdAt);
@@ -259,6 +262,11 @@ function seedPosFixture() {
     createdAt,
     createdAt,
   );
+  db.prepare(
+    `INSERT INTO inventory_movements (
+       product_id, quantity_delta, movement_type, reference_type, reason, actor_user_id, stock_after, created_at
+     ) VALUES (?, ?, 'adjustment', 'opening_balance', 'Initial fixture balance', 'e2e-owner', ?, ?)`,
+  ).run('e2e-product', 999, 999, createdAt);
   db.prepare(
     `INSERT OR IGNORE INTO customers (
        id, name, phone, country_code, is_active, created_at, updated_at

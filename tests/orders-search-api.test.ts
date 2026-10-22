@@ -32,6 +32,9 @@ async function main() {
   seedCustomer(db, 'orders-search-customer', 'Élodie Search Customer', '+1/555 ext 0199');
   seedCustomer(db, 'cust-zoe', 'Zoë Laurent', '+1 (555) 234-5678');
   seedCustomer(db, 'cust-oconnor', "Shaun O'Connor", '+353 1 496 0000');
+  seedCustomer(db, 'cust-georgian', 'ᲐᲑᲒ', '+995 32 200 0001');
+  seedCustomer(db, 'cust-turkish-istanbul', 'İstanbul', '+90 212 000 0001');
+  seedCustomer(db, 'cust-turkish-ali', 'ALİ', '+90 212 000 0002');
 
   const insertOrder = db.prepare(`
     INSERT INTO orders (order_number, customer_id, type, status, subtotal, total, created_at, updated_at)
@@ -53,6 +56,25 @@ async function main() {
   insertOrder.run('ORD-SYNTH-NOCUST-999', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
   insertOrder.run('ORD-SYNTH-ALPHA123', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
   insertOrder.run('ORD-SYNTH-EMOJI-🍕🍔', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('01-1234', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('2026-0042', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('#100-special', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('ORD-SYNTH-TAB\t123', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('ORD-GEORGIAN', 'cust-georgian', '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run(
+    'ORD-TURKISH-ISTANBUL',
+    'cust-turkish-istanbul',
+    '2023-01-01 00:00:00',
+    '2023-01-01 00:00:00',
+  );
+  insertOrder.run(
+    'ORD-TURKISH-DOT',
+    'cust-turkish-ali',
+    '2023-01-01 00:00:00',
+    '2023-01-01 00:00:00',
+  );
+  insertOrder.run('ORD-ᲐᲑᲒ-100', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
+  insertOrder.run('ORD-İST-200', null, '2023-01-01 00:00:00', '2023-01-01 00:00:00');
   for (let i = 0; i < 55; i++) {
     insertOrder.run(
       `ORD-SEARCH-NEWER-${i}`,
@@ -355,6 +377,184 @@ async function main() {
         `repeated search ${i + 1} returns target order`,
       );
     }
+
+    // 12. Hyphenated numeric order number probe
+    const probeHyphenOrder = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('01-1234')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeHyphenOrder.status,
+      200,
+      'probe search for hyphenated order number succeeds',
+    );
+    assertOrThrow(
+      probeHyphenOrder.data.orders.some((o: any) => o.order_number === '01-1234'),
+      'probe returns order matching hyphenated order number 01-1234',
+    );
+
+    // 13. Year-hyphenated order number and partial numeric sequence probe
+    const probeYearOrder = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('2026-0042')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(probeYearOrder.status, 200, 'probe search for 2026-0042 succeeds');
+    assertOrThrow(
+      probeYearOrder.data.orders.some((o: any) => o.order_number === '2026-0042'),
+      'probe returns order matching 2026-0042',
+    );
+
+    const probePartialHyphen = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('01-12')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probePartialHyphen.status,
+      200,
+      'probe search for partial hyphen sequence succeeds',
+    );
+    assertOrThrow(
+      probePartialHyphen.data.orders.some((o: any) => o.order_number === '01-1234'),
+      'probe returns order matching partial hyphen sequence 01-12',
+    );
+
+    const probeNumericSub = await api(baseUrl, `/api/orders?search=${encodeURIComponent('1234')}`, {
+      headers: owner.authHeader,
+    });
+    assertEqualOrThrow(probeNumericSub.status, 200, 'probe search for numeric substring succeeds');
+    assertOrThrow(
+      probeNumericSub.data.orders.some((o: any) => o.order_number === '01-1234'),
+      'probe returns order matching numeric substring 1234',
+    );
+
+    // 14. Special punctuation order number probe
+    const probeSpecialPunct = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('#100-')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(probeSpecialPunct.status, 200, 'probe search for #100- succeeds');
+    assertOrThrow(
+      probeSpecialPunct.data.orders.some((o: any) => o.order_number === '#100-special'),
+      'probe returns order matching #100-special',
+    );
+
+    // 15. Embedded NUL character probe
+    const probeNul = await api(baseUrl, `/api/orders?search=${encodeURIComponent('01-1234\0')}`, {
+      headers: owner.authHeader,
+    });
+    assertEqualOrThrow(probeNul.status, 200, 'probe search with embedded NUL succeeds without 500');
+
+    // 16. Control characters probe
+    const probeControl = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('\x01\x02test')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeControl.status,
+      200,
+      'probe search with control chars succeeds without 500',
+    );
+
+    // 17. Embedded tab, newline, carriage return, and DEL probe
+    const probeTab = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('SYNTH-TAB\t123')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(probeTab.status, 200, 'probe search with embedded tab succeeds without 500');
+    assertOrThrow(
+      probeTab.data.orders.some((o: any) => o.order_number === 'ORD-SYNTH-TAB\t123'),
+      'probe returns order matching embedded tab via UDF fallback',
+    );
+
+    const probeNewlineCrDel = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('test\n\r\x7F')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeNewlineCrDel.status,
+      200,
+      'probe search with newline, carriage return, and DEL succeeds without 500',
+    );
+
+    // 18. Unicode Georgian Mtavruli / Mkhedruli case folding probe
+    const probeGeorgian = await api(baseUrl, `/api/orders?search=${encodeURIComponent('აბგ')}`, {
+      headers: owner.authHeader,
+    });
+    assertEqualOrThrow(
+      probeGeorgian.status,
+      200,
+      'probe search for Georgian Mkhedruli აბგ succeeds',
+    );
+    assertOrThrow(
+      probeGeorgian.data.orders.some((o: any) => o.order_number === 'ORD-GEORGIAN'),
+      'probe returns order matching customer Georgian Mtavruli ᲐᲑᲒ',
+    );
+
+    // 19. Unicode Turkish dotted capital / decomposed lowercase probe
+    const probeTurkishDecomposed = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('i\u0307st')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeTurkishDecomposed.status,
+      200,
+      'probe search for Turkish decomposed i\u0307st succeeds',
+    );
+    assertOrThrow(
+      probeTurkishDecomposed.data.orders.some(
+        (o: any) => o.order_number === 'ORD-TURKISH-ISTANBUL',
+      ),
+      'probe returns order matching customer İstanbul with decomposed i\u0307st',
+    );
+
+    // 20. Stored customer ALİ queried with ASCII ali probe
+    const probeTurkishAli = await api(baseUrl, `/api/orders?search=${encodeURIComponent('ali')}`, {
+      headers: owner.authHeader,
+    });
+    assertEqualOrThrow(probeTurkishAli.status, 200, 'probe search for ASCII ali succeeds');
+    assertOrThrow(
+      probeTurkishAli.data.orders.some((o: any) => o.order_number === 'ORD-TURKISH-DOT'),
+      'probe returns order matching customer ALİ with ASCII ali',
+    );
+
+    // 21. Non-ASCII Unicode order_number probe
+    const probeOrderGeorgian = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('აბგ-100')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeOrderGeorgian.status,
+      200,
+      'probe search for order number with Georgian აბგ-100 succeeds',
+    );
+    assertOrThrow(
+      probeOrderGeorgian.data.orders.some((o: any) => o.order_number === 'ORD-ᲐᲑᲒ-100'),
+      'probe returns order matching non-ASCII order_number ORD-ᲐᲑᲒ-100',
+    );
+
+    const probeOrderTurkish = await api(
+      baseUrl,
+      `/api/orders?search=${encodeURIComponent('i\u0307st-200')}`,
+      { headers: owner.authHeader },
+    );
+    assertEqualOrThrow(
+      probeOrderTurkish.status,
+      200,
+      'probe search for order number with decomposed Turkish i\u0307st-200 succeeds',
+    );
+    assertOrThrow(
+      probeOrderTurkish.data.orders.some((o: any) => o.order_number === 'ORD-İST-200'),
+      'probe returns order matching non-ASCII order_number ORD-İST-200',
+    );
 
     const activePage1 = await api(
       baseUrl,

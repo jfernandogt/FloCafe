@@ -117,7 +117,7 @@ After migrations and with `foreign_keys` re-enabled, startup runs:
 | Operation | Entry point | Notes |
 | --- | --- | --- |
 | Create a backup | `createBackup(targetPath?, signal?, options?)` | Runs under the database maintenance lock, so it cannot overlap another backup, restore, or wipe. Returns the path and the schema version. |
-| List backups | `listBackups()` | Reports file name, path, size, creation time, `manual` or `auto` kind, and the schema version when readable. |
+| List backups | `listBackups(options?)` | Reports file name, path, size, creation time, `manual` or `auto` kind, and the schema version when readable. Supports cursor pagination (`limit`, `cursor`) via `listBackupsPage()`. |
 | Restore a backup | `restoreBackup(backupPath, forceDirect?, signal?)` | Also under the maintenance lock. |
 
 Backup, restore, and wipe are serialised by one lock. Two of them running at once is the failure
@@ -126,8 +126,9 @@ mode that corrupts a database, so any new entry point in this area must take the
 `restoreBackup` reads the `_flo_meta` stamp and the `user_version` pragma from the backup and
 decides between a direct file replacement and a data-only restore from the metadata. An unreadable
 source returns a structured failure with both versions rather than throwing. Both restore paths
-execute `executeSequenceRepair` to re-align sequence counters with restored orders and bills and
-mark repair complete.
+validate inventory ledger movement chains in durable append order (`id` ASC), execute
+`executeSequenceRepair` to re-align sequence counters with restored orders and bills, and mark repair
+complete.
 
 ### Entry points
 

@@ -21,6 +21,15 @@ const path = require('path');
 const crypto = require('crypto');
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-diagnostics-bounds-'));
 const originalFetch = globalThis.fetch;
+const priorTelemetryDev = process.env.FLO_TELEMETRY_DEV;
+const priorOffline = process.env.FLO_MATRIX_OFFLINE;
+
+function restoreEnv(): void {
+  if (priorTelemetryDev === undefined) delete process.env.FLO_TELEMETRY_DEV;
+  else process.env.FLO_TELEMETRY_DEV = priorTelemetryDev;
+  if (priorOffline === undefined) delete process.env.FLO_MATRIX_OFFLINE;
+  else process.env.FLO_MATRIX_OFFLINE = priorOffline;
+}
 Module._load = function (request: string, parent: unknown, isMain: boolean) {
   if (request === 'electron') {
     return { app: { isPackaged: true, getPath: () => testDir, getVersion: () => '3.11.0' } };
@@ -97,18 +106,20 @@ const settle = async (predicate: () => boolean, timeoutMs = 5000) => {
 };
 
 async function main() {
+  process.env.FLO_TELEMETRY_DEV = '1';
+  process.env.FLO_MATRIX_OFFLINE = '1';
   console.log('Diagnostics Bounds Tests');
   console.log('='.repeat(56));
 
   let db = initTestDb();
 
   console.log(
-    '\n1. The migrated default is on, and an explicit local opt-out retains only local evidence',
+    '\n1. A fresh install is opted out by default, and an explicit local opt-out retains only local evidence',
   );
   assertEqualOrThrow(
     readSetting(db, 'diagnostics_transmission_enabled'),
-    'true',
-    'a fresh database enables safe automatic transmission after the one-time migration',
+    'false',
+    'a fresh database keeps automatic transmission off until the operator opts in',
   );
   setSetting(db, 'diagnostics_settings_explicit', 'true');
   setSetting(db, 'diagnostics_transmission_enabled', 'false');
@@ -1094,6 +1105,9 @@ async function main() {
   setSetting(db, 'diagnostics_consent', 'true');
   setSetting(db, 'diagnostics_transmission_enabled', 'false');
   db.prepare("DELETE FROM settings WHERE key = 'diagnostics_settings_explicit'").run();
+  db.prepare(
+    "INSERT OR IGNORE INTO users (id, name, email, password, role, is_active) VALUES ('diag-upgrade-owner', 'Upgrade Owner', 'upgrade-owner@flo.local', 'x', 'owner', 1)",
+  ).run();
   db.pragma('user_version = 108');
   closeDatabase();
   db = initTestDb();
@@ -1290,10 +1304,14 @@ async function main() {
   );
   cloudSync.stop();
   globalThis.fetch = originalFetch;
+  process.env.FLO_MATRIX_OFFLINE = '1';
 
   setSetting(db, 'diagnostics_consent', 'false');
   setSetting(db, 'diagnostics_transmission_enabled', 'false');
   db.prepare("DELETE FROM settings WHERE key = 'diagnostics_settings_explicit'").run();
+  db.prepare(
+    "INSERT OR IGNORE INTO users (id, name, email, password, role, is_active) VALUES ('diag-upgrade-owner', 'Upgrade Owner', 'upgrade-owner@flo.local', 'x', 'owner', 1)",
+  ).run();
   db.pragma('user_version = 108');
   closeDatabase();
   db = initTestDb();
@@ -1329,11 +1347,13 @@ async function main() {
   console.log(`${results.passed} passed, ${results.failed} failed`);
   closeDatabase();
   fs.rmSync(testDir, { recursive: true, force: true });
+  restoreEnv();
   process.exit(results.failed > 0 ? 1 : 0);
 }
 
 main().catch((error) => {
   console.error('Test suite crashed:', error);
+  restoreEnv();
   closeDatabase();
   fs.rmSync(testDir, { recursive: true, force: true });
   process.exit(1);

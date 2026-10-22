@@ -103,6 +103,13 @@ export const PERMISSION_DEFINITIONS = [
     risk: 'sensitive',
   },
   {
+    id: 'orders.item.price_override',
+    area: 'orders',
+    defaultRoles: OWNER,
+    configurable: false,
+    risk: 'sensitive',
+  },
+  {
     id: 'orders.item.restore',
     area: 'orders',
     defaultRoles: OWNER_MANAGER,
@@ -170,7 +177,7 @@ export const PERMISSION_DEFINITIONS = [
   {
     id: 'bills.print',
     area: 'payments',
-    defaultRoles: OWNER_MANAGER,
+    defaultRoles: OWNER_MANAGER_CASHIER,
     configurable: true,
     risk: 'standard',
   },

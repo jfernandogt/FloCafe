@@ -131,7 +131,10 @@ Scoped native custom events
 (`flo.orders.item-edit.attempt.changed`) refresh mounted notices in the current tab after the edit
 modal persists or resolves an attempt, and the browser `storage` event covers other tabs.
 An identity change during an item-edit commit closes the stale editor and refreshes the current
-order or table context without installing the returned order from the previous identity.
+order or table context without installing the returned order from the previous identity. Recovery
+notices, inline issues, refresh errors, storage warnings, and in-flight resolution handlers are
+scoped to the selected `(tenantId, actorId, orderId)` so switching orders or identities clears
+transient notices and ignores late-settling responses from another order.
 
 ### Split-check availability is a state, not a hidden button
 
@@ -445,7 +448,11 @@ instead of the shared one.
 
 The renderer's print surface is a decision tree, not a single path. All of it lives in
 [`usePrinterStore`](../../frontend/src/hooks/usePrinter.ts), and the shared kernel, renderers, and
-transports are described in [Printing architecture](printing.md).
+transports are described in [Printing architecture](printing.md). Before dispatching a bill or tax
+bill, `usePrinterStore` awaits receipt settings hydration (`ensureReceiptSettingsLoaded()`, backed
+by [`useReceiptSettingsSync`](../../frontend/src/hooks/useReceiptSettingsSync.ts)) so storefront
+branding and receipt metadata are loaded into `pos-settings.ts` from `GET /api/settings/business`
+before rendering.
 
 For a bill or a kitchen ticket, in the order the store tries them:
 
@@ -556,16 +563,21 @@ against `en.json`, the derived print-label table, and a `tsc` pass over the fron
 
 ## Customer display
 
-`/customer-display` is a signed-in order-status board. It polls `GET /orders` and shows active
-orders in a Preparing column (`pending`, `preparing`) and a Ready column (`ready`). It re-reads
-`GET /settings/customer-display` on every poll, so changes made in Settings > Kitchen Display apply
-without reloading the board. The tenant-wide config sets which statuses show, the refresh interval,
-and whether the last-updated time is shown. At desktop widths, each column renders complete bill or
-order numbers in readable rows and independently rotates measured pages every ten seconds when
-needed. Newly ready orders take priority on the next rotation, interleaved with existing pages. At
-narrow widths the rows remain in one scrollable flow. A failed poll retains the last successful
-orders and reports that the feed is stale. The same settings card shows the display URL with copy
-and open actions. Strings come from the `customerDisplay` message namespace.
+`/customer-display` is a signed-in order-status board. It pages through `GET /orders` via
+`before_id` cursor pagination (100 orders per page, up to 50 pages) filtered by configured statuses
+and shows active orders in a Preparing column (`pending`, `preparing`) and a Ready column (`ready`).
+It re-reads `GET /settings/customer-display` on every poll cycle, so changes made in Settings >
+Kitchen Display apply without reloading the board. The tenant-wide config sets which statuses show,
+the refresh interval, and whether the last-updated time is shown. Deduplicated orders are sorted
+oldest first and applied atomically once all pages complete in a cycle, preserving the ten-second TV
+visual page rotation. At desktop widths, each column renders complete bill or order numbers in
+readable rows and independently rotates measured pages every ten seconds when needed. Newly ready
+orders take priority on the next rotation, interleaved with existing pages. At narrow widths the rows
+remain in one scrollable flow. A failed poll retains the last successful orders and reports that the
+feed is stale. Multi-page poll cycles automatically pace their interval above the configured refresh
+time when necessary to stay within the 120 requests per minute API limit. The same settings card
+shows the display URL with copy and open actions. Strings come from the `customerDisplay` message
+namespace.
 
 An owner or manager can also pair a standalone device (a TV or tablet browser) from the same card.
 The card loads the POS server's LAN addresses and uses the selected address for both the display URL
@@ -575,8 +587,11 @@ one-time link without creating another token. If no LAN address is available, th
 offers only the local preview; if address lookup fails, it shows an error and retry action. The board
 moves the token from the URL fragment into `localStorage` and polls
 `GET /api/customer-display/feed` with it instead of using a staff session, so it needs no login and
-can read nothing but order numbers and statuses. When the feed answers `401` (the token was
-revoked), the board clears the stored token and orders, then shows an unpaired screen.
+can read nothing but order numbers and statuses. It follows `next_cursor` across pages (100 orders
+per page, up to 50 pages) to display the complete eligible queue, deduplicating orders and updating
+the board state atomically per poll cycle. When the feed answers `401` (the token was revoked),
+in-flight requests abort immediately, the board clears the stored token and orders, and shows an
+unpaired screen.
 
 ## Tech stack
 
@@ -634,7 +649,7 @@ frontend/src/
 │   ├── tables/                 Floorplan editor, table move modal, table turnover badge
 │   ├── ui/                     shadcn/ui primitives
 │   └── updates/                Update download prompt and install guard dialog
-├── hooks/                      Printer, KDS, theme, update, cash, and formatting hooks
+├── hooks/                      Printer, KDS, theme, update, cash, approver, and formatting hooks
 ├── lib/
 │   ├── i18n/                   Language registry, loader, and the 24 message files
 │   ├── printer/                Encoders, document builders, warnings, WebUSB bridge,

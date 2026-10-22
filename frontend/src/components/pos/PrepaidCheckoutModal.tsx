@@ -33,6 +33,8 @@ import {
   type DiscountMode,
   type DiscountType,
 } from '@/lib/discount-settings';
+import { ApproverSelect } from '@/components/ApproverSelect';
+import { useManagerApprovers } from '@/hooks/useManagerApprovers';
 
 interface LoyaltySettings {
   loyalty_enabled: boolean;
@@ -42,6 +44,7 @@ export interface PrepaidPayment {
   method: string;
   payment_method_id?: number;
   amount: number;
+  transaction_id?: string;
 }
 
 export interface PrepaidDiscount {
@@ -49,10 +52,14 @@ export interface PrepaidDiscount {
   value: number;
   reason?: string;
   override_pin?: string;
+  approver_id?: string;
 }
 
 interface Props {
   currency: string;
+  initialCardTransactionIdRequired?: boolean;
+  initialDiscount?: PrepaidDiscount | null;
+  discountCommitted?: boolean;
   onClose: () => void;
   onConfirm: (
     payments: PrepaidPayment[],
@@ -86,6 +93,7 @@ interface Payment {
   method: string;
   payment_method_id?: number;
   amount: string;
+  transaction_id?: string;
 }
 
 type AmountTarget =
@@ -94,7 +102,13 @@ type AmountTarget =
   | { kind: 'discount' }
   | null;
 
-export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
+export default function PrepaidCheckoutModal({
+  initialCardTransactionIdRequired,
+  initialDiscount = null,
+  discountCommitted = false,
+  onClose,
+  onConfirm,
+}: Props) {
   const cart = useCartStore();
   const customer = cart.customer;
   const t = useTranslations('pos');
@@ -125,16 +139,31 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
   const [walletAmount, setWalletAmount] = useState('');
   const [processing, setProcessing] = useState(false);
   const [customMethods, setCustomMethods] = useState<CustomPaymentMethod[]>([]);
+  const [cardTransactionIdRequired, setCardTransactionIdRequired] = useState(
+    Boolean(initialCardTransactionIdRequired),
+  );
 
   // Discount state (applied to the order once checkout is confirmed)
-  const [discountOpen, setDiscountOpen] = useState(false);
-  const [discountType, setDiscountType] = useState<DiscountType>('percentage');
-  const [discountValue, setDiscountValue] = useState('');
-  const [discountReason, setDiscountReason] = useState('');
+  const hasInitialDiscount = Boolean(initialDiscount && initialDiscount.value > 0);
+  const [discountOpen, setDiscountOpen] = useState(hasInitialDiscount);
+  const [discountType, setDiscountType] = useState<DiscountType>(
+    hasInitialDiscount && initialDiscount ? initialDiscount.type : 'percentage',
+  );
+  const [discountValue, setDiscountValue] = useState(() => {
+    if (!hasInitialDiscount || !initialDiscount) return '';
+    return initialDiscount.type === 'amount'
+      ? formatInput(toDisplayUnit(initialDiscount.value))
+      : String(initialDiscount.value);
+  });
+  const [discountReason, setDiscountReason] = useState(
+    hasInitialDiscount && initialDiscount?.reason ? initialDiscount.reason : '',
+  );
   const [discountMode, setDiscountMode] = useState<DiscountMode>('percentage');
   const [discountModeLoaded, setDiscountModeLoaded] = useState(false);
+  const managerApprovers = useManagerApprovers();
   const [discountRequiresApproval, setDiscountRequiresApproval] = useState(false);
   const [discountPin, setDiscountPin] = useState('');
+  const [discountApproverId, setDiscountApproverId] = useState<string | null>(null);
   const [amountTarget, setAmountTarget] = useState<AmountTarget>(null);
 
   const previewDiscount = useMemo(() => {
@@ -150,6 +179,16 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
       value: discountType === 'percentage' ? normalizedValue : toStoredUnit(normalizedValue),
     };
   }, [discountType, discountValue, toStoredUnit, unitAdapter.maxDecimals]);
+  const committedInitialDiscountUnchanged = Boolean(
+    discountCommitted &&
+    initialDiscount &&
+    initialDiscount.value > 0 &&
+    previewDiscount &&
+    previewDiscount.type === initialDiscount.type &&
+    previewDiscount.value === initialDiscount.value &&
+    (discountReason || undefined) === (initialDiscount.reason || undefined),
+  );
+  const discountNeedsApprovalPin = discountRequiresApproval && !committedInitialDiscountUnchanged;
   const chargeContext = useMemo(
     () => ({
       orderType: cart.orderType,
@@ -193,7 +232,7 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
   const [reconciledDiscountMode, setReconciledDiscountMode] = useState(discountMode);
   if (discountMode !== reconciledDiscountMode) {
     setReconciledDiscountMode(discountMode);
-    if (discountMode === 'none') {
+    if (discountMode === 'none' && !committedInitialDiscountUnchanged) {
       setDiscountType(defaultDiscountTypeForMode(discountMode));
       setDiscountValue('');
       setDiscountReason('');
@@ -203,7 +242,12 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
     }
   }
 
-  if (discountMode !== 'none' && !isDiscountTypeAllowed(discountMode, discountType)) {
+  if (
+    discountModeLoaded &&
+    !committedInitialDiscountUnchanged &&
+    discountMode !== 'none' &&
+    !isDiscountTypeAllowed(discountMode, discountType)
+  ) {
     setDiscountType(defaultDiscountTypeForMode(discountMode));
     setDiscountValue('');
     setDiscountReason('');
@@ -225,6 +269,10 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
       })
       .catch(() => {})
       .finally(() => setDiscountModeLoaded(true));
+    api
+      .get('/settings/card_transaction_id_required')
+      .then((res) => setCardTransactionIdRequired(res.data?.setting?.value === 'true'))
+      .catch(() => {});
     api
       .get('/payment-methods')
       .then((res) => {
@@ -315,6 +363,19 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
     payments.reduce((s, p) => s + toMinorUnits(toStoredUnit(parseFloat(p.amount) || 0)), 0) +
     toMinorUnits(walletAmt);
   const remainingMinor = toMinorUnits(remaining);
+
+  const updatePaymentTransactionId = (idx: number, value: string) => {
+    setPayments((current) =>
+      current.map((payment, index) =>
+        index === idx ? { ...payment, transaction_id: value } : payment,
+      ),
+    );
+  };
+
+  const needsTransactionId = (payment: Payment) =>
+    cardTransactionIdRequired &&
+    payment.method === 'card' &&
+    payment.payment_method_id === undefined;
 
   const updatePaymentAmount = (idx: number, value: string) => {
     setPaymentsTouched(true);
@@ -434,6 +495,15 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
       toast.error(t('paymentFailed'));
       return;
     }
+    if (
+      paymentRows.some(
+        (p) =>
+          needsTransactionId(p) && (parseFloat(p.amount) || 0) > 0 && !p.transaction_id?.trim(),
+      )
+    ) {
+      toast.error(t('cardTransactionIdMissing'));
+      return;
+    }
     const paymentTotalMinor =
       paymentRows.reduce(
         (sum, payment) => sum + toMinorUnits(toStoredUnit(Number(payment.amount) || 0)),
@@ -464,11 +534,24 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
         return;
       }
     }
-    if (preview.discountAmount > 0 && discountRequiresApproval && !discountPin) {
-      toast.error(t('managerPinRequired'));
-      return;
+    const effectiveDiscountApproverId = discountApproverId ?? managerApprovers.selectedApproverId;
+    if (preview.discountAmount > 0 && discountNeedsApprovalPin) {
+      if (
+        !discountPin ||
+        managerApprovers.loading ||
+        managerApprovers.loadFailed ||
+        managerApprovers.approvers.length === 0 ||
+        !effectiveDiscountApproverId
+      ) {
+        toast.error(t('managerPinRequired'));
+        return;
+      }
     }
-    if (preview.discountAmount > 0 && !isDiscountTypeAllowed(discountMode, discountType)) {
+    if (
+      preview.discountAmount > 0 &&
+      !committedInitialDiscountUnchanged &&
+      !isDiscountTypeAllowed(discountMode, discountType)
+    ) {
       toast.error(t('discountInvalid'));
       return;
     }
@@ -479,6 +562,9 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
         method: p.payment_method_id === undefined ? p.method : 'custom',
         ...(p.payment_method_id !== undefined ? { payment_method_id: p.payment_method_id } : {}),
         amount: toStoredUnit(parseFloat(p.amount) || 0),
+        ...(needsTransactionId(p) && p.transaction_id?.trim()
+          ? { transaction_id: p.transaction_id.trim() }
+          : {}),
       }))
       .filter((p) => p.amount > 0 && !isNaN(p.amount));
 
@@ -488,7 +574,11 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
             type: discountType,
             value: previewDiscount?.value ?? 0,
             reason: discountReason || undefined,
-            override_pin: discountRequiresApproval && discountPin ? discountPin : undefined,
+            override_pin: discountNeedsApprovalPin && discountPin ? discountPin : undefined,
+            approver_id:
+              discountNeedsApprovalPin && discountPin
+                ? effectiveDiscountApproverId || undefined
+                : undefined,
           }
         : null;
 
@@ -764,15 +854,29 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
                 placeholder={t('discountReasonPlaceholder')}
                 className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
               />
-              {discountRequiresApproval && parseFloat(discountValue) > 0 && (
-                <input
-                  type="password"
-                  value={discountPin}
-                  onChange={(e) => setDiscountPin(e.target.value)}
-                  placeholder={t('managerPin')}
-                  maxLength={6}
-                  className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
-                />
+              {discountNeedsApprovalPin && parseFloat(discountValue) > 0 && (
+                <div className="space-y-2">
+                  <ApproverSelect
+                    id="prepaidDiscountApprover"
+                    approvers={managerApprovers.approvers}
+                    selectedApproverId={discountApproverId ?? managerApprovers.selectedApproverId}
+                    onSelectApprover={(id) => {
+                      setDiscountApproverId(id);
+                      setDiscountPin('');
+                    }}
+                    loading={managerApprovers.loading}
+                    loadFailed={managerApprovers.loadFailed}
+                    disabled={processing}
+                  />
+                  <input
+                    type="password"
+                    value={discountPin}
+                    onChange={(e) => setDiscountPin(e.target.value)}
+                    placeholder={t('managerPin')}
+                    maxLength={6}
+                    className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
+                  />
+                </div>
               )}
               {discountValue && (
                 <Button
@@ -783,6 +887,7 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
                     setDiscountValue('');
                     setDiscountReason('');
                     setDiscountPin('');
+                    setDiscountApproverId(null);
                     setPaymentsTouched(false);
                   }}
                 >
@@ -814,34 +919,50 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
                       ? payment.method
                       : `custom:${payment.payment_method_id}`
                   }
-                  className="flex min-h-12"
+                  className="space-y-1"
                 >
-                  <button
-                    type="button"
-                    title={label}
-                    onClick={() => {
-                      setAmountTarget({ kind: 'payment', index: idx });
-                      allocateRemainingTo(idx);
-                    }}
-                    className={`touch-target w-36 shrink-0 justify-start rounded-s-xl border px-3 gap-2 text-sm font-semibold transition-colors ${active ? 'bg-brand text-white border-brand' : 'bg-muted text-foreground border-border hover:border-brand hover:text-brand'}`}
-                  >
-                    {Icon && <Icon size={15} />}
-                    <span className="truncate">{label}</span>
-                  </button>
-                  <div className="flex flex-1 items-center border border-s-0 border-border rounded-e-xl bg-card focus-within:ring-2 focus-within:ring-brand focus-within:border-transparent">
-                    <span className="ps-3 text-muted-foreground text-xs">{inputCurrencyLabel}</span>
-                    <input
-                      type="number"
-                      value={payment.amount}
-                      onFocus={() => setAmountTarget({ kind: 'payment', index: idx })}
-                      onChange={(e) => updatePaymentAmount(idx, e.target.value)}
-                      placeholder="0.00"
-                      inputMode="decimal"
-                      className="min-w-0 flex-1 px-2 py-2 text-end text-base font-semibold outline-none rounded-e-xl"
-                      step={inputCurrencyStep}
-                      min="0"
-                    />
+                  <div className="flex min-h-12">
+                    <button
+                      type="button"
+                      title={label}
+                      onClick={() => {
+                        setAmountTarget({ kind: 'payment', index: idx });
+                        allocateRemainingTo(idx);
+                      }}
+                      className={`touch-target w-36 shrink-0 justify-start rounded-s-xl border px-3 gap-2 text-sm font-semibold transition-colors ${active ? 'bg-brand text-white border-brand' : 'bg-muted text-foreground border-border hover:border-brand hover:text-brand'}`}
+                    >
+                      {Icon && <Icon size={15} />}
+                      <span className="truncate">{label}</span>
+                    </button>
+                    <div className="flex flex-1 items-center border border-s-0 border-border rounded-e-xl bg-card focus-within:ring-2 focus-within:ring-brand focus-within:border-transparent">
+                      <span className="ps-3 text-muted-foreground text-xs">
+                        {inputCurrencyLabel}
+                      </span>
+                      <input
+                        type="number"
+                        value={payment.amount}
+                        onFocus={() => setAmountTarget({ kind: 'payment', index: idx })}
+                        onChange={(e) => updatePaymentAmount(idx, e.target.value)}
+                        placeholder="0.00"
+                        inputMode="decimal"
+                        className="min-w-0 flex-1 px-2 py-2 text-end text-base font-semibold outline-none rounded-e-xl"
+                        step={inputCurrencyStep}
+                        min="0"
+                      />
+                    </div>
                   </div>
+                  {needsTransactionId(payment) && active && (
+                    <input
+                      type="text"
+                      value={payment.transaction_id ?? ''}
+                      onChange={(e) => updatePaymentTransactionId(idx, e.target.value)}
+                      placeholder={t('cardTransactionIdLabel')}
+                      aria-label={t('cardTransactionIdLabel')}
+                      maxLength={256}
+                      autoComplete="off"
+                      className="w-full min-h-11 rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand"
+                    />
+                  )}
                 </div>
               );
             })}
@@ -997,7 +1118,16 @@ export default function PrepaidCheckoutModal({ onClose, onConfirm }: Props) {
               taxLoading ||
               !preview ||
               hasInvalidFixedDiscount ||
-              totalPaymentMinor < remainingMinor
+              totalPaymentMinor < remainingMinor ||
+              Boolean(
+                preview.discountAmount > 0 &&
+                discountNeedsApprovalPin &&
+                (!discountPin ||
+                  managerApprovers.loading ||
+                  managerApprovers.loadFailed ||
+                  managerApprovers.approvers.length === 0 ||
+                  !(discountApproverId ?? managerApprovers.selectedApproverId)),
+              )
             }
             className="w-full h-12 text-base font-semibold rounded-xl"
             size="lg"

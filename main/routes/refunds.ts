@@ -1,9 +1,16 @@
 import { createHash, randomUUID } from 'crypto';
 import { Router, Request, Response } from 'express';
-import { getDatabase, now, withTxn } from '../db';
+import { getDatabase, verifyPinAsync, withTxn } from '../db';
 import { requirePermission } from '../services/authorization';
+import { ROLE_ACCESS } from '../../shared/role-permissions';
 import { checkPinRateLimit, isPinRateLimited, clearPinRateLimit } from './orders';
-import { createRefund, getTenantCurrency, RefundRequest } from '../services/refund';
+import {
+  createRefund,
+  getTenantCurrency,
+  RefundRequest,
+  validateRefundPreconditions,
+  PreVerifiedRefundApprover,
+} from '../services/refund';
 import { getCurrencyFractionDigits, getCurrencyMinorUnitFactor } from '../countries';
 import { cloudSync } from '../services/cloud-sync';
 import { isOperationReference, serializeOperationFailure } from '../lib/operation-failure';
@@ -11,6 +18,31 @@ import { isOperationReference, serializeOperationFailure } from '../lib/operatio
 const router = Router();
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const MAX_REASON_LENGTH = 500;
+
+const refundPinLocks = new Map<string, Promise<void>>();
+
+export async function withRefundPinLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = refundPinLocks.get(key) || Promise.resolve();
+  let resolveCurrent!: () => void;
+  const current = new Promise<void>((resolve) => {
+    resolveCurrent = resolve;
+  });
+  refundPinLocks.set(key, current);
+
+  try {
+    await previous.catch(() => {});
+    return await fn();
+  } finally {
+    resolveCurrent();
+    if (refundPinLocks.get(key) === current) {
+      refundPinLocks.delete(key);
+    }
+  }
+}
+
+export function resetRefundPinLocksForTests(): void {
+  refundPinLocks.clear();
+}
 
 function refundIdempotencyKey(req: Request): string | null {
   const supplied = req.get('Idempotency-Key')?.trim();
@@ -24,7 +56,11 @@ function refundIdempotencyKey(req: Request): string | null {
   return supplied;
 }
 
-function refundRequestHash(billId: string, body: any, approverId: string): string {
+function refundRequestHash(
+  billId: string,
+  body: Record<string, unknown>,
+  approverId: string,
+): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
@@ -103,7 +139,7 @@ function structuredRefundFailure(
   };
 }
 
-router.post('/', requirePermission('refunds.initiate'), (req: Request, res: Response) => {
+router.post('/', requirePermission('refunds.initiate'), async (req: Request, res: Response) => {
   let operationCommitted = false;
   let transactionBodyCompleted = false;
   try {
@@ -206,6 +242,116 @@ router.post('/', requirePermission('refunds.initiate'), (req: Request, res: Resp
     const userId = String((req as any).user.userId);
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
 
+    const checkIdempotencyReplay = (): Record<string, unknown> | null => {
+      if (!idempotencyKey) return null;
+      const prior = db
+        .prepare(`
+        SELECT bill_id, request_hash, response_json
+        FROM refund_idempotency
+        WHERE user_id = ? AND idempotency_key = ?
+      `)
+        .get(userId, idempotencyKey) as
+        | { bill_id: string | number; request_hash: string; response_json: string }
+        | undefined;
+      if (!prior) return null;
+      if (String(prior.bill_id) !== String(billId) || prior.request_hash !== requestHash) {
+        throw Object.assign(
+          new Error('Idempotency-Key was already used for a different refund request'),
+          { statusCode: 409, diagnosticCode: 'idempotency_conflict' },
+        );
+      }
+      try {
+        return JSON.parse(prior.response_json);
+      } catch {
+        throw Object.assign(new Error('Stored refund response is invalid'), {
+          statusCode: 500,
+        });
+      }
+    };
+
+    // 1. Check idempotency replay outside withTxn
+    const initialReplay = checkIdempotencyReplay();
+    if (initialReplay) {
+      return res.status(201).json(initialReplay);
+    }
+
+    // 2. Pre-validate preconditions (business-day window, order item, amounts, session, etc.) before checking PIN
+    const { lateRefund } = validateRefundPreconditions(db, {
+      billId,
+      method: body.method,
+      amountCents,
+      orderItemId,
+    });
+
+    const overridePin = body.override_pin;
+
+    // 3. Rate-limited async PIN verification outside withTxn
+    const rateLimitKey = `pin:${clientIp}:refund`;
+    let preVerifiedApprover: PreVerifiedRefundApprover | null = null;
+    let idempotencyReplay: Record<string, unknown> | null = null;
+
+    await withRefundPinLock(rateLimitKey, async () => {
+      idempotencyReplay = checkIdempotencyReplay();
+      if (idempotencyReplay) {
+        return;
+      }
+
+      if (!overridePin) {
+        throw Object.assign(
+          new Error(
+            lateRefund
+              ? 'Owner PIN required to process a refund on a completed order'
+              : 'Manager PIN required to process a refund',
+          ),
+          { statusCode: 400, diagnosticCode: 'approver_pin_required' },
+        );
+      }
+
+      if (isPinRateLimited(rateLimitKey)) {
+        throw Object.assign(new Error('Too many PIN attempts. Try again in 15 minutes.'), {
+          statusCode: 429,
+          diagnosticCode: 'pin_rate_limited',
+        });
+      }
+
+      const allowedRoles = lateRefund ? ROLE_ACCESS.owner : ROLE_ACCESS.ownerManager;
+      const placeholders = allowedRoles.map(() => '?').join(', ');
+      const candidate = db
+        .prepare(
+          `SELECT id, pin_hash, role, is_active FROM users WHERE id = ? AND pin_hash IS NOT NULL AND role IN (${placeholders}) AND is_active = 1`,
+        )
+        .get(selectedApproverId, ...allowedRoles) as
+        | { id: string; pin_hash: string; role: string; is_active: number }
+        | undefined;
+
+      let pinMatches = false;
+      if (candidate) {
+        pinMatches = await verifyPinAsync(candidate.pin_hash, overridePin);
+      }
+
+      if (!candidate || !pinMatches) {
+        idempotencyReplay = checkIdempotencyReplay();
+        if (idempotencyReplay) {
+          return;
+        }
+        checkPinRateLimit(rateLimitKey);
+        throw Object.assign(new Error(lateRefund ? 'Invalid owner PIN' : 'Invalid manager PIN'), {
+          statusCode: 403,
+          diagnosticCode: 'approver_pin_invalid',
+        });
+      }
+
+      preVerifiedApprover = {
+        id: candidate.id,
+        verifiedPinHash: candidate.pin_hash,
+        lateRefund,
+      };
+    });
+
+    if (idempotencyReplay) {
+      return res.status(201).json(idempotencyReplay);
+    }
+
     const refundRequest: RefundRequest = {
       billId,
       orderItemId,
@@ -222,6 +368,7 @@ router.post('/', requirePermission('refunds.initiate'), (req: Request, res: Resp
       clearPinRateLimit,
       idempotencyKey,
       requestHash,
+      preVerifiedApprover,
     };
 
     const result = withTxn(() => {
@@ -229,6 +376,7 @@ router.post('/', requirePermission('refunds.initiate'), (req: Request, res: Resp
       transactionBodyCompleted = true;
       return refundResult;
     });
+    clearPinRateLimit(rateLimitKey);
     operationCommitted = true;
     res.status(201).json(result);
   } catch (error: any) {

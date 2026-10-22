@@ -990,7 +990,7 @@ interface SchemaRecoveryReference {
   definitions: Map<string, string>;
 }
 
-let cachedSchemaRecoveryReference: SchemaRecoveryReference | null = null;
+const cachedSchemaRecoveryReferences = new Map<number, SchemaRecoveryReference>();
 let buildingIdealSchema = false;
 
 let recoverySchemaBuildCount = 0;
@@ -999,25 +999,35 @@ export function getRecoverySchemaBuildCount(): number {
   return recoverySchemaBuildCount;
 }
 
-function getMigrationRegistryIdentity(): string {
-  const last = MIGRATIONS[MIGRATIONS.length - 1];
-  return `${MIGRATIONS.length}:${last?.version ?? 0}:${last?.name ?? ''}`;
+export function clearRecoverySchemaReference(): void {
+  cachedSchemaRecoveryReferences.clear();
 }
 
-function getRecoverySchemaReference(): SchemaRecoveryReference {
-  const currentIdentity = getMigrationRegistryIdentity();
-  if (cachedSchemaRecoveryReference && cachedSchemaRecoveryReference.identity === currentIdentity) {
-    return cachedSchemaRecoveryReference;
+function getMigrationRegistryIdentity(targetVersion?: number): string {
+  const supportedVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version || 0;
+  const version = targetVersion !== undefined ? targetVersion : supportedVersion;
+  const last = MIGRATIONS[MIGRATIONS.length - 1];
+  return `${version}:${MIGRATIONS.length}:${last?.version ?? 0}:${last?.name ?? ''}`;
+}
+
+function getRecoverySchemaReference(targetVersion?: number): SchemaRecoveryReference {
+  const supportedVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version || 0;
+  const version = targetVersion !== undefined ? targetVersion : supportedVersion;
+  const currentIdentity = getMigrationRegistryIdentity(version);
+  const cached = cachedSchemaRecoveryReferences.get(version);
+  if (cached && cached.identity === currentIdentity) {
+    return cached;
   }
   recoverySchemaBuildCount += 1;
-  const idealDb = buildIdealSchemaDb();
+  const idealDb = buildIdealSchemaDb(version);
   try {
-    cachedSchemaRecoveryReference = {
+    const ref: SchemaRecoveryReference = {
       identity: currentIdentity,
       tableColumns: new Map(getTables(idealDb).map((table) => [table, getColumns(idealDb, table)])),
       definitions: normalizedSchemaDefinitions(idealDb),
     };
-    return cachedSchemaRecoveryReference;
+    cachedSchemaRecoveryReferences.set(version, ref);
+    return ref;
   } finally {
     idealDb.close();
   }
@@ -1061,14 +1071,20 @@ export function isHealthyDatabaseFile(
         .prepare("SELECT value FROM _flo_meta WHERE key = 'schema_version'")
         .get() as { value: string } | undefined;
     } catch {}
+
+    const supportedVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version || 0;
+    if (schemaVersion < 1 || schemaVersion > supportedVersion) {
+      candidate.close();
+      return false;
+    }
+
     const tables = new Set(getTables(candidate));
-    const schemaRef = getRecoverySchemaReference();
+    const schemaRef = getRecoverySchemaReference(schemaVersion);
     const expectedSchema = schemaRef.tableColumns;
     const columnsValid = [...expectedSchema.entries()].every(([table, columns]) => {
       const available = new Set(getColumns(candidate, table));
       return columns.every((column) => available.has(column));
     });
-    const supportedVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version || 0;
     const actualDefinitions = normalizedSchemaDefinitions(candidate);
     const definitionsValid =
       schemaRef.definitions.size === actualDefinitions.size &&
@@ -2308,19 +2324,105 @@ export function getBackupMetadata(backupPath: string): BackupMetadata {
   }
 }
 
-/** Lists auto and manual backups located in the managed backups directory, newest first. */
-export function listBackups(): {
+export interface BackupInfo {
   fileName: string;
   path: string;
   sizeBytes: number;
   createdAt: string;
   kind: 'manual' | 'auto';
   schemaVersion: number | null;
-}[] {
-  const backupDir = getBackupDir();
-  if (!fs.existsSync(backupDir)) return [];
+}
 
-  return fs
+export interface BackupPaginationOptions {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface BackupPageResult {
+  backups: BackupInfo[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+function createInvalidBackupPaginationError(message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = 'ERR_INVALID_BACKUP_PAGINATION';
+  return error;
+}
+
+export function encodeBackupCursor(createdAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ createdAt, id }), 'utf8').toString('base64url');
+}
+
+export function decodeBackupCursor(rawCursor: string): { createdAt: string; id: string } {
+  if (typeof rawCursor !== 'string' || !/^[A-Za-z0-9_-]+$/.test(rawCursor)) {
+    throw createInvalidBackupPaginationError('Invalid backup cursor');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(rawCursor, 'base64url').toString('utf8'));
+  } catch {
+    throw createInvalidBackupPaginationError('Invalid backup cursor');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw createInvalidBackupPaginationError('Invalid backup cursor');
+  }
+  const { createdAt, id } = parsed as { createdAt?: unknown; id?: unknown };
+  if (
+    typeof createdAt !== 'string' ||
+    createdAt.length === 0 ||
+    Number.isNaN(Date.parse(createdAt)) ||
+    typeof id !== 'string' ||
+    id.length === 0
+  ) {
+    throw createInvalidBackupPaginationError('Invalid backup cursor');
+  }
+  return { createdAt, id };
+}
+
+export function parseBackupPaginationQuery(
+  rawLimit: unknown,
+  rawCursor: unknown,
+): BackupPaginationOptions {
+  const options: BackupPaginationOptions = {};
+  if (rawLimit !== undefined) {
+    if (typeof rawLimit !== 'string' || !/^\d+$/.test(rawLimit)) {
+      throw createInvalidBackupPaginationError('Invalid backup pagination limit');
+    }
+    const limit = Number.parseInt(rawLimit, 10);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw createInvalidBackupPaginationError('Invalid backup pagination limit');
+    }
+    options.limit = limit;
+  }
+  if (rawCursor !== undefined) {
+    if (typeof rawCursor !== 'string' || rawCursor.length === 0) {
+      throw createInvalidBackupPaginationError('Invalid backup cursor');
+    }
+    decodeBackupCursor(rawCursor);
+    options.cursor = rawCursor;
+  }
+  return options;
+}
+
+/** Lists auto and manual backups in the managed backups directory, newest first. */
+export function listBackupsPage(options: BackupPaginationOptions = {}): BackupPageResult {
+  if (
+    options.limit !== undefined &&
+    (typeof options.limit !== 'number' ||
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 100)
+  ) {
+    throw createInvalidBackupPaginationError('Invalid backup pagination limit');
+  }
+  const cursor = options.cursor !== undefined ? decodeBackupCursor(options.cursor) : null;
+  const backupDir = getBackupDir();
+  if (!fs.existsSync(backupDir)) {
+    return { backups: [], nextCursor: null, hasMore: false };
+  }
+
+  let candidates = fs
     .readdirSync(backupDir)
     .filter((fileName) => fileName.startsWith('flo-backup-') && fileName.endsWith('.db'))
     .map((fileName) => ({ fileName, fullPath: resolveContainedPath(backupDir, fileName) }))
@@ -2336,16 +2438,51 @@ export function listBackups(): {
       const stat = fs.statSync(fullPath);
       return {
         fileName,
-        path: fullPath,
+        fullPath,
         sizeBytes: stat.size,
         createdAt: stat.mtime.toISOString(),
         kind: (fileName.includes('-pre-v') || isRestoreSafetyCopyName(fileName)
           ? 'auto'
           : 'manual') as 'manual' | 'auto',
-        schemaVersion: readBackupSchemaVersion(fullPath),
       };
     })
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+      return a.fileName === b.fileName ? 0 : a.fileName < b.fileName ? 1 : -1;
+    });
+
+  if (cursor) {
+    candidates = candidates.filter(
+      (entry) =>
+        entry.createdAt < cursor.createdAt ||
+        (entry.createdAt === cursor.createdAt && entry.fileName < cursor.id),
+    );
+  }
+
+  const limit = options.limit;
+  const sliced = limit !== undefined ? candidates.slice(0, limit + 1) : candidates;
+  const hasMore = limit !== undefined && sliced.length > limit;
+  const pageEntries = limit !== undefined ? sliced.slice(0, limit) : sliced;
+  const backups = pageEntries.map((entry) => ({
+    fileName: entry.fileName,
+    path: entry.fullPath,
+    sizeBytes: entry.sizeBytes,
+    createdAt: entry.createdAt,
+    kind: entry.kind,
+    schemaVersion: readBackupSchemaVersion(entry.fullPath),
+  }));
+  const last = backups[backups.length - 1];
+  const nextCursor = hasMore && last ? encodeBackupCursor(last.createdAt, last.fileName) : null;
+  return { backups, nextCursor, hasMore };
+}
+
+export function listBackups(): BackupInfo[];
+export function listBackups(options: BackupPaginationOptions): BackupPageResult;
+export function listBackups(options?: BackupPaginationOptions): BackupInfo[] | BackupPageResult {
+  if (options === undefined) {
+    return listBackupsPage().backups;
+  }
+  return listBackupsPage(options);
 }
 
 /** Deletes a backup from the managed backups directory after validating filename format. */
@@ -2422,9 +2559,9 @@ export function getTables(dbInstance: Database.Database): string[] {
   try {
     const tables = dbInstance
       .prepare(`
-      SELECT name FROM sqlite_master WHERE type='table' 
+      SELECT name FROM sqlite_master WHERE type='table'
       AND (sql NOT LIKE 'CREATE VIRTUAL TABLE%' OR sql IS NULL)
-      AND name NOT LIKE 'sqlite_%' 
+      AND name NOT LIKE 'sqlite_%'
       AND name NOT LIKE '%_fts_%'
       AND name NOT LIKE '%_fts'
       AND name <> '_flo_meta'
@@ -2443,8 +2580,8 @@ export function validateInventoryLedgerRows(
   addonRows: readonly Record<string, unknown>[] = [],
 ): string | null {
   type Chain = {
-    createdAt: string;
-    id: number;
+    id: number | null;
+    index: number;
     movementType: string;
     quantityDelta: number;
     stockAfter: number;
@@ -2477,26 +2614,28 @@ export function validateInventoryLedgerRows(
     if (movementType === 'sale' && quantityDelta >= 0) {
       return 'Sale movements must reduce product stock';
     }
-    const createdAt = String(row?.created_at ?? '');
     const rawId = Number(row?.id);
-    const id = Number.isFinite(rawId) ? rawId : index;
+    const id = Number.isFinite(rawId) ? rawId : null;
     const key = chainKey(productId, variantId, addonId);
     const movements = movementsByChain.get(key) ?? [];
-    movements.push({ createdAt, id, movementType, quantityDelta, stockAfter });
+    movements.push({ id, index, movementType, quantityDelta, stockAfter });
     movementsByChain.set(key, movements);
   }
 
-  const latestMovementByChain = new Map<
-    string,
-    { createdAt: string; id: number; stockAfter: number }
-  >();
+  const allHavePositiveIntegerIds =
+    movementRows.length > 0 &&
+    movementRows.every((row) => {
+      const rawId = Number(row?.id);
+      return Number.isInteger(rawId) && rawId > 0;
+    });
+
+  const latestMovementByChain = new Map<string, Chain>();
   for (const [key, movements] of movementsByChain) {
+    // Order by durable append sequence when all movements carry positive integer IDs, otherwise preserve input order.
     movements.sort((left, right) =>
-      left.createdAt < right.createdAt
-        ? -1
-        : left.createdAt > right.createdAt
-          ? 1
-          : left.id - right.id,
+      allHavePositiveIntegerIds && left.id !== null && right.id !== null && left.id !== right.id
+        ? left.id - right.id
+        : left.index - right.index,
     );
     const firstMovement = movements[0];
     const firstTolerance =
@@ -2668,8 +2807,9 @@ export function getInventoryMovementRows(dbInstance: Database.Database): Record<
     'source_created_at',
   ].filter((column) => columns.has(column));
   if (selectableColumns.length === 0) return [];
+  const orderBy = columns.has('id') ? ' ORDER BY id ASC' : '';
   return dbInstance
-    .prepare(`SELECT ${selectableColumns.join(', ')} FROM inventory_movements`)
+    .prepare(`SELECT ${selectableColumns.join(', ')} FROM inventory_movements${orderBy}`)
     .all() as Record<string, unknown>[];
 }
 
@@ -3854,6 +3994,15 @@ function materializeRestoreSource(
     sourcePath,
     fs.constants.O_RDONLY | ((fs.constants as any).O_NOFOLLOW || 0),
   );
+  let snapshotDir: string | null = null;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned || !snapshotDir) return;
+    cleaned = true;
+    try {
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    } catch {}
+  };
   try {
     const openedStat = fs.fstatSync(sourceFd);
     if (
@@ -3879,27 +4028,20 @@ function materializeRestoreSource(
     if (pathEntryExists(`${sourcePath}-wal`) || pathEntryExists(`${sourcePath}-shm`)) {
       throw new Error('Restore source acquired SQLite sidecars while it was being read');
     }
-    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-restore-source-'));
-    try {
-      const snapshotPath = path.join(snapshotDir, 'source.db');
-      fs.writeFileSync(snapshotPath, sourceBytes, { flag: 'wx', mode: 0o600 });
-      let cleaned = false;
-      const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-        try {
-          fs.rmSync(snapshotDir, { recursive: true, force: true });
-        } catch {}
-      };
-      return { snapshotPath, cleanup };
-    } catch (writeError) {
-      try {
-        fs.rmSync(snapshotDir, { recursive: true, force: true });
-      } catch {}
-      throw writeError;
-    }
+    snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-restore-source-'));
+    const snapshotPath = path.join(snapshotDir, 'source.db');
+    fs.writeFileSync(snapshotPath, sourceBytes, { flag: 'wx', mode: 0o600 });
+    return { snapshotPath, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
   } finally {
-    fs.closeSync(sourceFd);
+    try {
+      fs.closeSync(sourceFd);
+    } catch (closeError) {
+      cleanup();
+      throw closeError;
+    }
   }
 }
 
@@ -4288,7 +4430,7 @@ export function rebuildSearchIndex(targetDb?: Database.Database): void {
 }
 
 /** Builds in-memory database using migration pipeline as ideal schema reference. */
-export function buildIdealSchemaDb(): Database.Database {
+export function buildIdealSchemaDb(targetVersion?: number): Database.Database {
   const idealDb = new Database(':memory:');
   registerOrderSearchFunctions(idealDb);
   idealDb.pragma('foreign_keys = OFF'); // Off during migrations
@@ -4296,7 +4438,7 @@ export function buildIdealSchemaDb(): Database.Database {
   db = idealDb;
   try {
     buildingIdealSchema = true;
-    runMigrations();
+    runMigrations(targetVersion);
   } finally {
     buildingIdealSchema = false;
     db = previousDb;
@@ -7290,6 +7432,8 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
       const consent = getSetting('diagnostics_consent');
       const explicit = getSetting('diagnostics_settings_explicit') === 'true';
       const transmission = getSetting('diagnostics_transmission_enabled');
+      const hasExistingUsers =
+        (db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n > 0;
       insertSettingIfMissing('diagnostics_settings_explicit', 'false');
       insertSettingIfMissing('diagnostics_consent_sync_pending', 'false');
       if (consent === 'false') {
@@ -7297,9 +7441,10 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
         upsertSetting('diagnostics_consent_sync_pending', 'true');
       } else if (explicit && transmission === 'false') {
         upsertSetting('diagnostics_consent_sync_pending', 'true');
-      } else if (!explicit) {
-        // Legacy false had no reliable provenance; enable once unless the
-        // merchant had explicitly refused diagnostics consent.
+      } else if (!explicit && hasExistingUsers) {
+        // Legacy false had no reliable provenance; enable once for existing
+        // installs unless the merchant had explicitly refused diagnostics consent.
+        // Fresh installs stay opted out until the operator chooses.
         upsertSetting('diagnostics_transmission_enabled', 'true');
       }
       if (
@@ -7438,6 +7583,26 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
       `);
     },
   },
+  {
+    version: 116,
+    name: 'add_order_item_price_override',
+    up: () => {
+      const columns = getColumns(db, 'order_items');
+      const add = (name: string, definition: string) => {
+        if (!columns.includes(name))
+          db.exec(`ALTER TABLE order_items ADD COLUMN ${name} ${definition}`);
+      };
+      add('price_overridden', 'INTEGER NOT NULL DEFAULT 0');
+      add('original_unit_price', 'REAL');
+      add('price_override_reason', 'TEXT');
+      add('price_overridden_by', 'TEXT');
+      add('price_overridden_at', 'TEXT');
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_order_items_price_overridden
+          ON order_items(price_overridden_at) WHERE price_overridden = 1;
+      `);
+    },
+  },
 ];
 
 function syncBackupBeforeMigration(fromVersion: number, toVersion: number): void {
@@ -7528,9 +7693,10 @@ export class SchemaVersionMismatchError extends Error {
   }
 }
 
-function runMigrations(): void {
+function runMigrations(targetVersion?: number): void {
   const current = getCurrentSchemaVersion();
-  const target = MIGRATIONS.length > 0 ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;
+  const maxSupported = MIGRATIONS.length > 0 ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;
+  const target = targetVersion !== undefined ? targetVersion : maxSupported;
   const verboseMigrationLogs = process.env.FLOCAFE_TEST_VERBOSE === '1';
 
   if (current > target) {
@@ -7539,27 +7705,30 @@ function runMigrations(): void {
   }
 
   if (current === target) {
-    console.log(`[DB] Schema up to date (v${current})`);
+    if (!buildingIdealSchema) console.log(`[DB] Schema up to date (v${current})`);
     return;
   }
 
-  console.log(`[DB] Schema: v${current} → v${target}`);
+  if (!buildingIdealSchema) console.log(`[DB] Schema: v${current} → v${target}`);
 
   // Create automatic pre-migration backup before running pending batch.
-  console.log(`[DB] Triggering auto-backup before migrating v${current} → v${target}...`);
-  syncBackupBeforeMigration(current, target);
+  if (!buildingIdealSchema) {
+    console.log(`[DB] Triggering auto-backup before migrating v${current} → v${target}...`);
+    syncBackupBeforeMigration(current, target);
+  }
 
   for (const migration of MIGRATIONS) {
     if (migration.version <= current) continue;
+    if (migration.version > target) break;
 
-    if (verboseMigrationLogs) {
+    if (verboseMigrationLogs && !buildingIdealSchema) {
       console.log(`[DB] Applying migration v${migration.version}: ${migration.name}`);
     }
     db.transaction(() => {
       migration.up();
       db.pragma(`user_version = ${migration.version}`);
     })();
-    if (verboseMigrationLogs) {
+    if (verboseMigrationLogs && !buildingIdealSchema) {
       console.log(`[DB] Migration v${migration.version} complete`);
     }
   }
@@ -8720,53 +8889,68 @@ export function attachEffectiveAddons<T extends { id: number }>(
     })[];
 
   const ids = items.map((item) => item.id);
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = dbInstance
-    .prepare(`SELECT * FROM order_item_addons WHERE order_item_id IN (${placeholders}) ORDER BY id`)
-    .all(...ids) as {
-    order_item_id: number;
-    addon_id: string | null;
-    addon_name: string;
-    price: number;
-    quantity: number;
-  }[];
+  const CHUNK_SIZE = 400;
 
   const byItem = new Map<
     number,
     { id: string | null; name: string; price: number; quantity: number }[]
   >();
-  for (const row of rows) {
-    const list = byItem.get(row.order_item_id) || [];
-    list.push({ id: row.addon_id, name: row.addon_name, price: row.price, quantity: row.quantity });
-    byItem.set(row.order_item_id, list);
+  for (let offset = 0; offset < ids.length; offset += CHUNK_SIZE) {
+    const chunk = ids.slice(offset, offset + CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = dbInstance
+      .prepare(
+        `SELECT * FROM order_item_addons WHERE order_item_id IN (${placeholders}) ORDER BY id`,
+      )
+      .all(...chunk) as {
+      order_item_id: number;
+      addon_id: string | null;
+      addon_name: string;
+      price: number;
+      quantity: number;
+    }[];
+    for (const row of rows) {
+      const list = byItem.get(row.order_item_id) || [];
+      list.push({
+        id: row.addon_id,
+        name: row.addon_name,
+        price: row.price,
+        quantity: row.quantity,
+      });
+      byItem.set(row.order_item_id, list);
+    }
   }
 
   const editVersionByItem = new Map<number, number>();
   const supersededItemIds = new Set<number>();
   try {
-    const auditRows = dbInstance
-      .prepare(
-        `SELECT id, order_item_id, action, details_json FROM order_audit_log WHERE order_item_id IN (${placeholders}) ORDER BY id`,
-      )
-      .all(...ids) as {
-      id: number;
-      order_item_id: number | string | null;
-      action: string;
-      details_json: string | null;
-    }[];
-    for (const audit of auditRows) {
-      const itemId = Number(audit.order_item_id);
-      if (!Number.isFinite(itemId)) continue;
-      const prev = editVersionByItem.get(itemId) ?? 0;
-      if (audit.id > prev) editVersionByItem.set(itemId, audit.id);
-      if (audit.action === 'item_edited' && audit.details_json) {
-        try {
-          const details = JSON.parse(audit.details_json) as { superseded?: unknown } | null;
-          if (details?.superseded === true) {
-            supersededItemIds.add(itemId);
+    for (let offset = 0; offset < ids.length; offset += CHUNK_SIZE) {
+      const chunk = ids.slice(offset, offset + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      const auditRows = dbInstance
+        .prepare(
+          `SELECT id, order_item_id, action, details_json FROM order_audit_log WHERE order_item_id IN (${placeholders}) ORDER BY id`,
+        )
+        .all(...chunk) as {
+        id: number;
+        order_item_id: number | string | null;
+        action: string;
+        details_json: string | null;
+      }[];
+      for (const audit of auditRows) {
+        const itemId = Number(audit.order_item_id);
+        if (!Number.isFinite(itemId)) continue;
+        const prev = editVersionByItem.get(itemId) ?? 0;
+        if (audit.id > prev) editVersionByItem.set(itemId, audit.id);
+        if (audit.action === 'item_edited' && audit.details_json) {
+          try {
+            const details = JSON.parse(audit.details_json) as { superseded?: unknown } | null;
+            if (details?.superseded === true) {
+              supersededItemIds.add(itemId);
+            }
+          } catch {
+            // Ignore malformed audit details_json.
           }
-        } catch {
-          // Ignore malformed audit details_json.
         }
       }
     }

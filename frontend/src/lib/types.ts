@@ -258,6 +258,9 @@ export interface OrderItem {
   status: 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled' | 'voided' | 'void_adjustment';
   superseded?: boolean;
   edit_version?: number;
+  price_overridden?: number | boolean;
+  original_unit_price?: number | null;
+  price_override_reason?: string | null;
 }
 
 export interface Bill {
@@ -287,6 +290,7 @@ export interface Bill {
         timestamp: string;
         tendered_amount?: number;
         change_amount?: number;
+        transaction_id?: string;
       }[]
     | null;
   split_group_id?: string | null;
@@ -441,4 +445,6 @@ export interface CartItem {
   addons: Addon[];
   special_instructions: string;
   variant?: ProductVariant | null;
+  /** Owner-set selling price for this line, sent to the server when the order is placed. */
+  price_override?: { price: number; reason: string } | null;
 }

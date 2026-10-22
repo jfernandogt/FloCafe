@@ -28,9 +28,26 @@ const mockSafeStorage = {
   decryptString: (b: Buffer) => b.toString('utf8'),
 };
 
+let readonlyBackupProbes = 0;
+
 Module._load = function (request: string, parent: unknown, isMain: boolean) {
   if (request === 'electron') return { app: mockApp, safeStorage: mockSafeStorage };
-  return originalLoad.apply(this, arguments as any);
+  const loaded = originalLoad.apply(this, arguments as any);
+  if (request === 'better-sqlite3') {
+    return new Proxy(loaded, {
+      construct(target, args, newTarget) {
+        if (
+          args[1] &&
+          typeof args[1] === 'object' &&
+          (args[1] as { readonly?: boolean }).readonly
+        ) {
+          readonlyBackupProbes += 1;
+        }
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+  }
+  return loaded;
 };
 
 process.env.JWT_SECRET = 'test-secret-for-db-tools-api';
@@ -47,11 +64,17 @@ const {
   MIGRATIONS,
   now,
   validateInventoryLedgerDatabase,
+  validateInventoryLedgerRows,
+  getInventoryMovementRows,
+  generateOrderNumber,
+  generateBillNumber,
+  repairSequences,
 } = require('../main/db');
 const { getJWTSecret } = require('../main/routes/auth');
 const { authRoutes } = require('../main/routes/auth');
 const { databaseToolsRoutes } = require('../main/routes/database-tools');
 const { databaseRoutes } = require('../main/routes/database');
+const { orderRoutes } = require('../main/routes/orders');
 const { verifyMasterPin, isMasterPinSet, resetMasterPin } = require('../main/services/master-pin');
 const {
   cancelHttpShutdownWork,
@@ -150,6 +173,7 @@ app.use((req: any, res: any, next: any) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/db-tools', databaseToolsRoutes);
 app.use('/api/db', databaseRoutes);
+app.use('/api/orders', orderRoutes);
 
 const downloadServer = http.createServer(app);
 installHttpShutdownTracking(downloadServer);
@@ -1618,6 +1642,137 @@ async function runTests() {
     );
   }
 
+  console.log('\nTest 3b4: GET /db-tools/backups cursor pagination');
+  {
+    const backupsDir = path.join(testDir, 'backups');
+    fs.mkdirSync(backupsDir, { recursive: true });
+    for (const existing of fs.readdirSync(backupsDir)) {
+      if (existing.endsWith('.db')) fs.unlinkSync(path.join(backupsDir, existing));
+    }
+
+    const baseTimeMs = Date.parse('2026-03-01T12:00:00.000Z');
+    const createdFiles: string[] = [];
+    const liveDbPath = path.join(testDir, 'flo.db');
+    for (let i = 1; i <= 16; i += 1) {
+      const padded = String(i).padStart(2, '0');
+      const kind = i % 2 === 0 ? 'manual' : 'auto';
+      const name = `flo-backup-${kind}-2026-03-01T12-00-${padded}-000Z.db`;
+      const fullPath = path.join(backupsDir, name);
+      fs.copyFileSync(liveDbPath, fullPath);
+      const mtimeSeconds =
+        i === 11 || i === 12 ? new Date(baseTimeMs + 11 * 1000) : new Date(baseTimeMs + i * 1000);
+      fs.utimesSync(fullPath, mtimeSeconds, mtimeSeconds);
+      createdFiles.push(fullPath);
+    }
+
+    try {
+      readonlyBackupProbes = 0;
+      const page1 = await request(app)
+        .get('/api/db-tools/backups?limit=5')
+        .set('Authorization', `Bearer ${ownerToken}`);
+      assertEqual(page1.status, 200, 'initial limit=5 page returns 200');
+      assertEqual(page1.body.backups?.length, 5, 'initial page returns 5 newest local backups');
+      assertEqual(page1.body.hasMore, true, 'initial page reports hasMore: true');
+      assert(
+        typeof page1.body.nextCursor === 'string' && page1.body.nextCursor.length > 0,
+        'initial page returns a nextCursor',
+      );
+      assertEqual(
+        readonlyBackupProbes,
+        5,
+        'initial limit=5 page probes schema version only for the 5 returned backups',
+      );
+      assertEqual(
+        page1.body.backups[0]?.fileName,
+        'flo-backup-manual-2026-03-01T12-00-16-000Z.db',
+        'newest backup is first on page 1',
+      );
+      assertEqual(
+        page1.body.backups[4]?.fileName,
+        'flo-backup-manual-2026-03-01T12-00-12-000Z.db',
+        'tie-broken higher fileName is 5th on page 1',
+      );
+
+      readonlyBackupProbes = 0;
+      const page2 = await request(app)
+        .get(`/api/db-tools/backups?limit=10&cursor=${encodeURIComponent(page1.body.nextCursor)}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      assertEqual(page2.status, 200, 'second limit=10 page returns 200');
+      assertEqual(page2.body.backups?.length, 10, 'second page returns next 10 older backups');
+      assertEqual(page2.body.hasMore, true, 'second page reports hasMore: true');
+      assert(
+        typeof page2.body.nextCursor === 'string' && page2.body.nextCursor.length > 0,
+        'second page returns a nextCursor',
+      );
+      assertEqual(
+        readonlyBackupProbes,
+        10,
+        'second limit=10 page probes schema version only for the 10 returned backups',
+      );
+      assertEqual(
+        page2.body.backups[0]?.fileName,
+        'flo-backup-auto-2026-03-01T12-00-11-000Z.db',
+        'tie-broken lower fileName with identical timestamp starts page 2 without gap or duplicate',
+      );
+
+      const page3 = await request(app)
+        .get(`/api/db-tools/backups?limit=10&cursor=${encodeURIComponent(page2.body.nextCursor)}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      assertEqual(page3.status, 200, 'final page returns 200');
+      assertEqual(page3.body.backups?.length, 1, 'final page returns remaining 1 backup');
+      assertEqual(page3.body.hasMore, false, 'final page reports hasMore: false');
+      assertEqual(page3.body.nextCursor, null, 'final page reports nextCursor: null');
+
+      const combinedNames = [
+        ...(page1.body.backups || []),
+        ...(page2.body.backups || []),
+        ...(page3.body.backups || []),
+      ].map((entry: { fileName: string }) => entry.fileName);
+      assertEqual(combinedNames.length, 16, 'paginated walk visits all 16 backups');
+      assertEqual(new Set(combinedNames).size, 16, 'paginated walk has zero duplicates');
+
+      const unpaginated = await request(app)
+        .get('/api/db-tools/backups')
+        .set('Authorization', `Bearer ${ownerToken}`);
+      assertEqual(unpaginated.status, 200, 'unpaginated request returns 200');
+      assertEqual(
+        unpaginated.body.backups?.length,
+        16,
+        'unpaginated request returns all 16 backups',
+      );
+      assertEqual(unpaginated.body.hasMore, false, 'unpaginated request reports hasMore: false');
+      assertEqual(
+        unpaginated.body.nextCursor,
+        null,
+        'unpaginated request reports nextCursor: null',
+      );
+      assertEqual(
+        JSON.stringify(combinedNames),
+        JSON.stringify(unpaginated.body.backups.map((b: { fileName: string }) => b.fileName)),
+        'paginated order matches full newest-first order',
+      );
+
+      for (const badQuery of [
+        'limit=0',
+        'limit=-3',
+        'limit=abc',
+        'limit=1.5',
+        'limit=5&cursor=not-valid-cursor',
+        `limit=5&cursor=${Buffer.from('{}').toString('base64url')}`,
+        `limit=5&cursor=${Buffer.from(JSON.stringify({ createdAt: 'not-a-date', id: 'flo-backup-manual-1.db' })).toString('base64url')}`,
+      ]) {
+        const badRes = await request(app)
+          .get(`/api/db-tools/backups?${badQuery}`)
+          .set('Authorization', `Bearer ${ownerToken}`);
+        assertEqual(badRes.status, 400, `invalid query "${badQuery}" returns 400`);
+      }
+    } finally {
+      for (const filePath of createdFiles) {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+    }
+  }
+
   // ── Test 3c: schema-mismatch import requires the Master PIN (GHSA-xxv4-gm82-4639) ──
   console.log('\nTest 3c: POST /db/import destructive path is master-PIN gated');
   {
@@ -1750,6 +1905,791 @@ async function runTests() {
       matchingOverwriteNoPin.status === 403,
       `matching-schema overwrite import without a PIN is still rejected (got ${matchingOverwriteNoPin.status})`,
     );
+  }
+
+  // ── Test 3d: sequence repair on partial import without sequences table ──
+  console.log(
+    '\nTest 3d: POST /db/import repairs sequences when importing orders/bills without sequences',
+  );
+  {
+    const insertSetting = (key: string, value: string) =>
+      db
+        .prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)')
+        .run(key, value, now());
+    insertSetting('country', 'IN');
+    insertSetting('currency', 'INR');
+    insertSetting('timezone', 'Asia/Kolkata');
+
+    const initialOrderNum = generateOrderNumber();
+    const initialBillNum = generateBillNumber();
+    const ordResult = db
+      .prepare('INSERT INTO orders (order_number, created_at) VALUES (?, ?)')
+      .run(initialOrderNum, now());
+    const initialOrderId = ordResult.lastInsertRowid;
+    db.prepare(
+      'INSERT INTO bills (order_id, bill_number, subtotal, tax_amount, total, paid_amount, balance, created_at) VALUES (?, ?, 100, 0, 100, 100, 0, ?)',
+    ).run(initialOrderId, initialBillNum, now());
+
+    const orderDate = initialOrderNum.split('-')[1];
+    const billDate = initialBillNum.split('-')[1];
+
+    const partialImport = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: false,
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: {
+            settings: [],
+            categories: [],
+            products: [],
+            users: [],
+            orders: [
+              { id: 102, order_number: `ORD-${orderDate}-0002`, created_at: now() },
+              { id: 103, order_number: `ORD-${orderDate}-0003`, created_at: now() },
+              { id: 104, order_number: `ORD-${orderDate}-0004`, created_at: now() },
+              { id: 105, order_number: `ORD-${orderDate}-0005`, created_at: now() },
+            ],
+            bills: [
+              {
+                id: 102,
+                order_id: 102,
+                bill_number: `INV-${billDate}-0002`,
+                subtotal: 10,
+                tax_amount: 0,
+                total: 10,
+                paid_amount: 10,
+                balance: 0,
+                created_at: now(),
+              },
+              {
+                id: 103,
+                order_id: 103,
+                bill_number: `INV-${billDate}-0003`,
+                subtotal: 10,
+                tax_amount: 0,
+                total: 10,
+                paid_amount: 10,
+                balance: 0,
+                created_at: now(),
+              },
+              {
+                id: 104,
+                order_id: 104,
+                bill_number: `INV-${billDate}-0004`,
+                subtotal: 10,
+                tax_amount: 0,
+                total: 10,
+                paid_amount: 10,
+                balance: 0,
+                created_at: now(),
+              },
+              {
+                id: 105,
+                order_id: 105,
+                bill_number: `INV-${billDate}-0005`,
+                subtotal: 10,
+                tax_amount: 0,
+                total: 10,
+                paid_amount: 10,
+                balance: 0,
+                created_at: now(),
+              },
+            ],
+          },
+        },
+      });
+
+    assert(partialImport.status === 200, `partial import succeeds (got ${partialImport.status})`);
+
+    const orderSeq = db
+      .prepare("SELECT current_value FROM sequences WHERE name = 'orders' AND date = ?")
+      .get(orderDate) as { current_value: number } | undefined;
+    assertEqual(orderSeq?.current_value, 5, 'orders sequence counter advanced to 5 after import');
+
+    const billSeq = db
+      .prepare("SELECT current_value FROM sequences WHERE name = 'bills' AND date = ?")
+      .get(billDate) as { current_value: number } | undefined;
+    assertEqual(billSeq?.current_value, 5, 'bills sequence counter advanced to 5 after import');
+
+    const nextOrderNum = generateOrderNumber();
+    assertEqual(nextOrderNum, `ORD-${orderDate}-0006`, 'next generated order number is 0006');
+    let orderInsertThrew = false;
+    try {
+      db.prepare('INSERT INTO orders (order_number, created_at) VALUES (?, ?)').run(
+        nextOrderNum,
+        now(),
+      );
+    } catch {
+      orderInsertThrew = true;
+    }
+    assert(!orderInsertThrew, 'creating next order succeeds without UNIQUE constraint failure');
+
+    const nextBillNum = generateBillNumber();
+    assertEqual(nextBillNum, `INV-${billDate}-0006`, 'next generated bill number is 0006');
+    let billInsertThrew = false;
+    try {
+      db.prepare(
+        'INSERT INTO bills (order_id, bill_number, subtotal, tax_amount, total, paid_amount, balance, created_at) VALUES (105, ?, 10, 0, 10, 10, 0, ?)',
+      ).run(nextBillNum, now());
+    } catch {
+      billInsertThrew = true;
+    }
+    assert(!billInsertThrew, 'creating next bill succeeds without UNIQUE constraint failure');
+
+    // Simulate reopen fast-path
+    const bootRepair = repairSequences(false);
+    assertEqual(bootRepair.repaired, false, 'reopen fast-path skips historical scan');
+
+    const nextOrderNumAfterReopen = generateOrderNumber();
+    assertEqual(
+      nextOrderNumAfterReopen,
+      `ORD-${orderDate}-0007`,
+      'next order number after reopen is 0007',
+    );
+    let orderReopenThrew = false;
+    try {
+      db.prepare('INSERT INTO orders (order_number, created_at) VALUES (?, ?)').run(
+        nextOrderNumAfterReopen,
+        now(),
+      );
+    } catch {
+      orderReopenThrew = true;
+    }
+    assert(!orderReopenThrew, 'creating order after reopen succeeds');
+  }
+
+  // ── Test 3e: imported order FTS search after partial import ──
+  console.log(
+    '\nTest 3e: POST /db/import rebuilds FTS search index for partial orders/customer import',
+  );
+  {
+    const partialFtsImport = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: false,
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: {
+            settings: [],
+            categories: [],
+            products: [],
+            users: [],
+            customers: [
+              {
+                id: 'cust-partial-fts-1',
+                name: 'Arthur Pendelton',
+                phone: '+15559876543',
+                created_at: now(),
+                updated_at: now(),
+              },
+            ],
+            orders: [
+              {
+                id: 8801,
+                order_number: 'ORD-PARTIAL-FTS-8801',
+                customer_id: 'cust-partial-fts-1',
+                type: 'takeaway',
+                status: 'pending',
+                subtotal: 50,
+                total: 50,
+                created_at: now(),
+                updated_at: now(),
+              },
+            ],
+          },
+        },
+      });
+
+    assert(
+      partialFtsImport.status === 200,
+      `partial FTS import succeeds (got ${partialFtsImport.status}, ${JSON.stringify(partialFtsImport.body)})`,
+    );
+
+    // Verify search by order number
+    const searchByOrder = await request(app)
+      .get('/api/orders?search=PARTIAL-FTS')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchByOrder.status === 200,
+      `search by order number succeeds (got ${searchByOrder.status})`,
+    );
+    const foundByOrder = searchByOrder.body.orders?.some(
+      (o: any) => o.order_number === 'ORD-PARTIAL-FTS-8801',
+    );
+    assert(foundByOrder, 'newly imported order is immediately searchable by order number');
+
+    // Verify search by customer name
+    const searchByName = await request(app)
+      .get('/api/orders?search=Pendelton')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchByName.status === 200,
+      `search by customer name succeeds (got ${searchByName.status})`,
+    );
+    const foundByName = searchByName.body.orders?.some(
+      (o: any) => o.order_number === 'ORD-PARTIAL-FTS-8801',
+    );
+    assert(foundByName, 'newly imported order is immediately searchable by customer name');
+
+    // Verify search by customer phone digits
+    const searchByPhone = await request(app)
+      .get('/api/orders?search=9876543')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchByPhone.status === 200,
+      `search by customer phone succeeds (got ${searchByPhone.status})`,
+    );
+    const foundByPhone = searchByPhone.body.orders?.some(
+      (o: any) => o.order_number === 'ORD-PARTIAL-FTS-8801',
+    );
+    assert(foundByPhone, 'newly imported order is immediately searchable by customer phone');
+  }
+
+  // ── Test 3f: JSON import preserving durable append order under backward clock ──
+  console.log(
+    '\nTest 3f: POST /api/db/import preserving durable append order under backward clock',
+  );
+  {
+    db.exec(`
+      DELETE FROM order_item_addons;
+      DELETE FROM order_items;
+      DELETE FROM payment_transaction_refs;
+      DELETE FROM bills;
+      DELETE FROM orders;
+      DELETE FROM inventory_movements;
+      DELETE FROM product_variants;
+      DELETE FROM products;
+      DELETE FROM addons;
+      DELETE FROM addon_groups;
+      DELETE FROM categories;
+    `);
+
+    const clockImportRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: true,
+        master_pin: '1234',
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: {
+            settings: [],
+            users: [],
+            categories: [{ id: 'cat-imp-clock', name: 'Import Clock Cat' }],
+            products: [
+              {
+                id: 'prod-imp-clock-1',
+                category_id: 'cat-imp-clock',
+                name: 'Clock Prod 1',
+                price: 10,
+                track_inventory: 1,
+                stock_quantity: 8,
+              },
+            ],
+            product_variants: [
+              {
+                id: 'var-imp-clock-1',
+                product_id: 'prod-imp-clock-1',
+                name: 'Clock Var 1',
+                price: 12,
+                track_inventory: 1,
+                stock_quantity: 15,
+              },
+            ],
+            addon_groups: [
+              {
+                id: 'ag-imp-clock',
+                name: 'Clock AG',
+                min_selection: 0,
+                max_selection: 5,
+                is_active: 1,
+              },
+            ],
+            addons: [
+              {
+                id: 'addon-imp-clock-1',
+                addon_group_id: 'ag-imp-clock',
+                name: 'Clock Addon 1',
+                price: 2,
+                track_inventory: 1,
+                stock_quantity: 27,
+              },
+            ],
+            inventory_movements: [
+              {
+                id: 1,
+                product_id: 'prod-imp-clock-1',
+                quantity_delta: 10,
+                stock_after: 10,
+                movement_type: 'adjustment',
+                created_at: '2026-10-21T12:00:00.000Z',
+              },
+              {
+                id: 2,
+                product_id: 'prod-imp-clock-1',
+                quantity_delta: -2,
+                stock_after: 8,
+                movement_type: 'sale',
+                created_at: '2026-10-21T11:59:00.000Z',
+              },
+              {
+                id: 3,
+                product_id: 'prod-imp-clock-1',
+                variant_id: 'var-imp-clock-1',
+                quantity_delta: 20,
+                stock_after: 20,
+                movement_type: 'adjustment',
+                created_at: '2026-10-21T12:00:00.000Z',
+              },
+              {
+                id: 4,
+                product_id: 'prod-imp-clock-1',
+                variant_id: 'var-imp-clock-1',
+                quantity_delta: -5,
+                stock_after: 15,
+                movement_type: 'sale',
+                created_at: '2026-10-21T11:59:00.000Z',
+              },
+              {
+                id: 5,
+                addon_id: 'addon-imp-clock-1',
+                quantity_delta: 30,
+                stock_after: 30,
+                movement_type: 'adjustment',
+                created_at: '2026-10-21T12:00:00.000Z',
+              },
+              {
+                id: 6,
+                addon_id: 'addon-imp-clock-1',
+                quantity_delta: -3,
+                stock_after: 27,
+                movement_type: 'sale',
+                created_at: '2026-10-21T11:59:00.000Z',
+              },
+            ],
+          },
+        },
+      });
+
+    assert(
+      clockImportRes.status === 200,
+      `clock import succeeds (got ${clockImportRes.status}, ${JSON.stringify(clockImportRes.body)})`,
+    );
+
+    const ledgerCheck = validateInventoryLedgerDatabase(db);
+    assertEqual(
+      ledgerCheck,
+      null,
+      'validateInventoryLedgerDatabase passes after clock rollback import',
+    );
+
+    const importedMovements = getInventoryMovementRows(db);
+    assert(importedMovements.length === 6, 'all 6 movements imported in durable order');
+    assert(
+      importedMovements[0].source_created_at === '2026-10-21T12:00:00.000Z',
+      'movement 1 source_created_at preserved',
+    );
+    assert(
+      importedMovements[1].source_created_at === '2026-10-21T11:59:00.000Z',
+      'movement 2 source_created_at preserved',
+    );
+  }
+
+  // ── Test 3g: Schema 115 GET /export excludes FTS tables and phone_digits, POST /import round-trips ──
+  console.log(
+    '\nTest 3g: Schema 115 GET /export excludes FTS tables and phone_digits, POST /import round-trips',
+  );
+  {
+    // Ensure jwt_secret exists in settings
+    db.prepare(`
+      INSERT INTO settings (key, value, updated_at) VALUES ('jwt_secret', 'live-secret-test-3g', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(now());
+
+    // Ensure populated customer and order exist before export
+    db.prepare(`
+      INSERT OR REPLACE INTO customers (id, name, phone, created_at, updated_at)
+      VALUES ('cust-roundtrip-89', 'Minerva McGonagall', '+15552345678', ?, ?)
+    `).run(now(), now());
+
+    db.prepare(`
+      INSERT OR REPLACE INTO orders (id, order_number, customer_id, type, status, subtotal, total, created_at, updated_at)
+      VALUES (8901, 'ORD-ROUNDTRIP-8901', 'cust-roundtrip-89', 'takeaway', 'pending', 65, 65, ?, ?)
+    `).run(now(), now());
+
+    const exportRes = await request(app)
+      .get('/api/db/export')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(exportRes.status === 200, `GET /api/db/export returns 200 (got ${exportRes.status})`);
+
+    const exportedTables = Object.keys(exportRes.body.data);
+    const ftsTables = exportedTables.filter((t) => t.includes('fts'));
+    assertEqual(ftsTables.length, 0, 'GET /export excludes all derived FTS and shadow tables');
+    assert(!exportedTables.includes('_flo_meta'), 'GET /export excludes _flo_meta');
+    assert(
+      exportedTables.every((t) => !t.startsWith('sqlite_')),
+      'GET /export excludes sqlite internal tables',
+    );
+
+    const exportedCustomers = exportRes.body.data.customers || [];
+    const hasPhoneDigits = exportedCustomers.some((c: any) => 'phone_digits' in c);
+    assert(
+      !hasPhoneDigits,
+      'GET /export excludes virtual generated column phone_digits from customers',
+    );
+
+    const exportedSettings = exportRes.body.data.settings || [];
+    const jwtRow = exportedSettings.find((s: any) => s.key === 'jwt_secret');
+    assertEqual(jwtRow?.value, '[REDACTED]', 'GET /export redacts jwt_secret');
+
+    // Wipe existing live data so overwrite: true round-trip can restore populated products + inventory_movements
+    db.exec(`
+      DELETE FROM order_item_addons;
+      DELETE FROM order_items;
+      DELETE FROM payment_transaction_refs;
+      DELETE FROM bills;
+      DELETE FROM orders;
+      DELETE FROM inventory_movements;
+      DELETE FROM product_variants;
+      DELETE FROM products;
+      DELETE FROM addons;
+      DELETE FROM addon_groups;
+      DELETE FROM customers;
+      DELETE FROM categories;
+    `);
+
+    const roundtripImportRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: true,
+        master_pin: '1234',
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: exportRes.body.data,
+        },
+      });
+
+    assert(
+      roundtripImportRes.status === 200,
+      `roundtrip import succeeds with overwrite: true (got ${roundtripImportRes.status}, ${JSON.stringify(roundtripImportRes.body)})`,
+    );
+
+    const liveJwtRow = db
+      .prepare("SELECT value FROM settings WHERE key = 'jwt_secret'")
+      .get() as any;
+    assert(
+      liveJwtRow && liveJwtRow.value === 'live-secret-test-3g',
+      'jwt_secret was preserved during import and not overwritten with [REDACTED]',
+    );
+
+    // Verify search finds the imported order by order number, customer name, and customer phone digits
+    const searchOrder = await request(app)
+      .get('/api/orders?search=ROUNDTRIP-8901')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(searchOrder.status === 200, 'search by order number succeeds');
+    assert(
+      searchOrder.body.orders?.some((o: any) => o.order_number === 'ORD-ROUNDTRIP-8901'),
+      'imported order found by order number',
+    );
+
+    const searchName = await request(app)
+      .get('/api/orders?search=McGonagall')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(searchName.status === 200, 'search by customer name succeeds');
+    assert(
+      searchName.body.orders?.some((o: any) => o.order_number === 'ORD-ROUNDTRIP-8901'),
+      'imported order found by customer name',
+    );
+
+    const searchPhone = await request(app)
+      .get('/api/orders?search=2345678')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(searchPhone.status === 200, 'search by phone digits succeeds');
+    assert(
+      searchPhone.body.orders?.some((o: any) => o.order_number === 'ORD-ROUNDTRIP-8901'),
+      'imported order found by customer phone digits',
+    );
+  }
+
+  // ── Test 3h: Contaminated schema 115 export with shadow tables and phone_digits ──
+  console.log('\nTest 3h: Contaminated schema 115 export with shadow tables and phone_digits');
+  {
+    const baseExportRes = await request(app)
+      .get('/api/db/export')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    const shadowTablesData = {
+      orders_search_fts: [
+        { rowid: 1, order_number: 'ORD-CONTAM-8902', customer_name: 'Luna Lovegood' },
+      ],
+      orders_search_fts_data: [{ id: 1, block: Buffer.from('fts block data') }],
+      orders_search_fts_idx: [{ pgno: 1 }],
+      orders_search_fts_config: [{ k: 'version', v: '1' }],
+      orders_search_fts_docsize: [{ id: 1, sz: 1 }],
+      customers_search_fts: [{ rowid: 1, name: 'Luna Lovegood' }],
+      customers_search_fts_data: [{ id: 1, block: Buffer.from('fts block data') }],
+      customers_search_fts_idx: [{ pgno: 1 }],
+      customers_search_fts_config: [{ k: 'version', v: '1' }],
+      customers_search_fts_docsize: [{ id: 1, sz: 1 }],
+    };
+
+    // Subtest 1: overwrite: false
+    const contamNoOverwritePayload = {
+      settings: [],
+      categories: [],
+      products: [],
+      users: [],
+      customers: [
+        {
+          id: 'cust-contam-1',
+          name: 'Luna Lovegood',
+          phone: '+15553456789',
+          phone_digits: '15553456789',
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+      orders: [
+        {
+          id: 8902,
+          order_number: 'ORD-CONTAM-8902',
+          customer_id: 'cust-contam-1',
+          type: 'takeaway',
+          status: 'pending',
+          subtotal: 30,
+          total: 30,
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+      ...shadowTablesData,
+    };
+
+    const contamNoOverwriteRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: false,
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: contamNoOverwritePayload,
+        },
+      });
+
+    assert(
+      contamNoOverwriteRes.status === 200,
+      `contaminated import succeeds with overwrite: false (got ${contamNoOverwriteRes.status}, ${JSON.stringify(contamNoOverwriteRes.body)})`,
+    );
+
+    const searchContam = await request(app)
+      .get('/api/orders?search=CONTAM-8902')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchContam.body.orders?.some((o: any) => o.order_number === 'ORD-CONTAM-8902'),
+      'contaminated import order is searchable after overwrite: false',
+    );
+
+    // Subtest 2: overwrite: true
+    // Clear inventory movements from live db first so overwrite is permitted
+    db.exec('DELETE FROM inventory_movements;');
+    const contamOverwritePayload = {
+      ...baseExportRes.body.data,
+      customers: [
+        ...(baseExportRes.body.data.customers || []),
+        {
+          id: 'cust-contam-1',
+          name: 'Luna Lovegood',
+          phone: '+15553456789',
+          phone_digits: '15553456789',
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+      orders: [
+        ...(baseExportRes.body.data.orders || []),
+        {
+          id: 8902,
+          order_number: 'ORD-CONTAM-8902',
+          customer_id: 'cust-contam-1',
+          type: 'takeaway',
+          status: 'pending',
+          subtotal: 30,
+          total: 30,
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+      ...shadowTablesData,
+    };
+
+    const contamOverwriteRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: true,
+        master_pin: '1234',
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: contamOverwritePayload,
+        },
+      });
+
+    assert(
+      contamOverwriteRes.status === 200,
+      `contaminated import succeeds with overwrite: true (got ${contamOverwriteRes.status}, ${JSON.stringify(contamOverwriteRes.body)})`,
+    );
+
+    const searchContamOver = await request(app)
+      .get('/api/orders?search=Lovegood')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchContamOver.body.orders?.some((o: any) => o.order_number === 'ORD-CONTAM-8902'),
+      'contaminated import order is searchable after overwrite: true',
+    );
+  }
+
+  // ── Test 3i: Historical schema 114 export -> schema 115 import ──
+  console.log(
+    '\nTest 3i: Historical schema 114 export -> schema 115 import succeeds and rebuilds search',
+  );
+  {
+    const baseExportRes = await request(app)
+      .get('/api/db/export')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    // Clear live db movements so schema mismatch import (treated like overwrite) is permitted
+    db.exec('DELETE FROM inventory_movements;');
+
+    const v114Payload = {
+      ...baseExportRes.body.data,
+      customers: [
+        ...(baseExportRes.body.data.customers || []),
+        {
+          id: 'cust-v114-fts',
+          name: 'Albus Dumbledore',
+          phone: '+15554567890',
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+      orders: [
+        ...(baseExportRes.body.data.orders || []),
+        {
+          id: 9915,
+          order_number: 'ORD-V114-FTS-9915',
+          customer_id: 'cust-v114-fts',
+          type: 'takeaway',
+          status: 'pending',
+          subtotal: 99,
+          total: 99,
+          created_at: now(),
+          updated_at: now(),
+        },
+      ],
+    };
+
+    const v114ImportRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: false,
+        master_pin: '1234',
+        data: {
+          schema_version: '114',
+          data: v114Payload,
+        },
+      });
+
+    assert(
+      v114ImportRes.status === 200,
+      `v114 export import succeeds (got ${v114ImportRes.status}, ${JSON.stringify(v114ImportRes.body)})`,
+    );
+
+    const searchV114 = await request(app)
+      .get('/api/orders?search=V114-FTS-9915')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchV114.body.orders?.some((o: any) => o.order_number === 'ORD-V114-FTS-9915'),
+      'v114 imported order found by order number',
+    );
+
+    const searchV114Name = await request(app)
+      .get('/api/orders?search=Dumbledore')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    assert(
+      searchV114Name.body.orders?.some((o: any) => o.order_number === 'ORD-V114-FTS-9915'),
+      'v114 imported order found by customer name',
+    );
+  }
+
+  // ── Test 3j: Rollback sentinel preservation on import error ──
+  console.log('\nTest 3j: Rollback sentinel preservation on import error');
+  {
+    // Clean up any residual category from prior runs
+    db.prepare("DELETE FROM categories WHERE id = 'sentinel-new-rollback-cat'").run();
+
+    const badPayload = {
+      settings: [],
+      users: [],
+      // Two rows with duplicate primary key triggers mid-transaction constraint failure
+      categories: [
+        { id: 'sentinel-new-rollback-cat', name: 'New Rollback Category 1', sort_order: 10 },
+        { id: 'sentinel-new-rollback-cat', name: 'Duplicate Should Fail', sort_order: 11 },
+      ],
+      products: [
+        {
+          id: 'prod-rollback-chain',
+          name: 'Rollback Chain Prod',
+          price: 10,
+          track_inventory: 1,
+          stock_quantity: 10,
+        },
+      ],
+      inventory_movements: [
+        {
+          id: 99999,
+          product_id: 'prod-rollback-chain',
+          quantity_delta: 10,
+          stock_after: 10,
+          movement_type: 'adjustment',
+          created_at: now(),
+        },
+      ],
+    };
+
+    const failImportRes = await request(app)
+      .post('/api/db/import')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        overwrite: false,
+        data: {
+          schema_version: String(getCurrentSchemaVersion()),
+          data: badPayload,
+        },
+      });
+
+    assert(
+      failImportRes.status >= 400,
+      `mid-transaction failure is rejected (got ${failImportRes.status})`,
+    );
+
+    const insertedCat = db
+      .prepare("SELECT name FROM categories WHERE id = 'sentinel-new-rollback-cat'")
+      .get() as any;
+    assert(
+      insertedCat === undefined,
+      'newly inserted category was rolled back after mid-transaction failure',
+    );
+
+    const integrity = db.pragma('integrity_check', { simple: true });
+    assertEqual(integrity, 'ok', 'PRAGMA integrity_check passes after rollback');
+
+    const fkCheck = db.pragma('foreign_key_check') as any[];
+    assertEqual(fkCheck.length, 0, 'PRAGMA foreign_key_check is clean after rollback');
   }
 
   // ── Test 4: POST /db-tools/initialize ────────────────────────────────────

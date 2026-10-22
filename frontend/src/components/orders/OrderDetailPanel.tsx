@@ -38,6 +38,7 @@ import {
   ClipboardList,
   Bike,
   Pencil,
+  Tag,
 } from 'lucide-react';
 import { useTranslations } from 'use-intl';
 import type { Order, OrderItem, Bill, Customer } from '@/lib/types';
@@ -67,6 +68,8 @@ export interface OrderDetailPanelProps {
   canCancelItems: boolean;
   canEditItems?: boolean;
   onEditItem?: (order: Order, item: OrderItem) => void;
+  canOverridePrice?: boolean;
+  onOverridePrice?: (order: Order, item: OrderItem) => void;
   canRestoreItems: boolean;
   canRefund: boolean;
   isWhatsAppReady: boolean;
@@ -114,6 +117,8 @@ function OrderDetailContent({
   canCancelItems,
   canEditItems = false,
   onEditItem,
+  canOverridePrice = false,
+  onOverridePrice,
   canRestoreItems,
   canRefund,
   isWhatsAppReady,
@@ -181,6 +186,11 @@ function OrderDetailContent({
 
   const orderBills = order.bills && order.bills.length > 0 ? order.bills : bill ? [bill] : [];
   const splitBills = orderBills.filter((candidate) => Boolean(candidate.split_group_id));
+  const paymentReferences = orderBills.flatMap((candidate) =>
+    Array.isArray(candidate.payment_details)
+      ? candidate.payment_details.filter((line) => Boolean(line.transaction_id))
+      : [],
+  );
   const canPaySplitBill = (candidate: Bill) =>
     candidate.payment_status === 'unpaid' || candidate.payment_status === 'partial';
   const hasUnpaidSplitBills = splitBills.some(canPaySplitBill);
@@ -554,6 +564,7 @@ function OrderDetailContent({
         {/* Items — every line is visible here, no truncation chip. */}
         <div className="px-4 py-3 space-y-2">
           <PendingOrderItemEdits
+            key={order.id}
             orderId={order.id}
             items={order.items}
             // Recovery is permission- and identity-gated; a paid or terminal order
@@ -596,6 +607,21 @@ function OrderDetailContent({
                           <Pencil size={14} />
                         </button>
                       )}
+                    {canOverridePrice &&
+                      onOverridePrice &&
+                      !isPaid &&
+                      !['completed', 'cancelled'].includes(order.status) &&
+                      !['cancelled', 'voided', 'void_adjustment'].includes(item.status) &&
+                      !itemEditBlocked(item.id) && (
+                        <button
+                          type="button"
+                          onClick={() => onOverridePrice(order, item)}
+                          className="size-8 flex items-center justify-center text-muted-foreground hover:text-foreground active:scale-95 rounded-md hover:bg-muted transition-colors touch-manipulation"
+                          title={tOrders('overridePrice')}
+                        >
+                          <Tag size={14} />
+                        </button>
+                      )}
                     {canCancelItems &&
                       !isPaid &&
                       !['completed', 'cancelled'].includes(order.status) &&
@@ -626,6 +652,13 @@ function OrderDetailContent({
                       )}
                   </div>
                 </div>
+                {Boolean(item.price_overridden) && (
+                  <div className="ps-6 mt-0.5 text-xs text-amber-600 dark:text-amber-400">
+                    {tOrders('priceOverriddenMenu', {
+                      price: fmt(Number(item.original_unit_price ?? 0)),
+                    })}
+                  </div>
+                )}
                 {item.addons && item.addons.length > 0 && (
                   <div className="ps-6 mt-0.5 text-xs text-muted-foreground">
                     {item.addons
@@ -744,6 +777,26 @@ function OrderDetailContent({
               <span className="text-red-600 dark:text-red-400 font-bold">
                 {tOrders('balance')}: {fmt(Number(bill.balance))}
               </span>
+            </div>
+          )}
+
+          {paymentReferences.length > 0 && (
+            <div className="mt-2.5 space-y-1 text-xs text-muted-foreground">
+              {paymentReferences.map((line, index) => (
+                <div
+                  key={`${line.method}:${line.transaction_id}:${index}`}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <CreditCard size={12} className="shrink-0" />
+                    <span className="truncate">
+                      {line.method === 'card' ? tPos('methodCard') : line.method} ·{' '}
+                      {tOrders('transactionNumber')}: <Ltr>{line.transaction_id}</Ltr>
+                    </span>
+                  </span>
+                  <span className="font-medium text-foreground">{fmt(Number(line.amount))}</span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -946,7 +999,7 @@ export function OrderDetailPanel({ onBack, ...props }: OrderDetailPanelProps) {
         </div>
       )}
       {props.order ? (
-        <OrderDetailContent {...props} order={props.order} />
+        <OrderDetailContent key={props.order.id} {...props} order={props.order} />
       ) : (
         <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 text-center p-6 text-muted-foreground bg-card rounded-xl border border-dashed border-border">
           <ClipboardList size={40} className="opacity-40" />

@@ -17,11 +17,11 @@ FloCafe has five fixed staff identities, declared in
 request time, not from the token, and there is no role editor — an install cannot add a sixth
 identity or rename one.
 
-What each identity is *allowed to do* is a separate, configurable layer. See
+What each identity is _allowed to do_ is a separate, configurable layer. See
 [Configurable permissions](#configurable-permissions) below.
 
 `shared/role-permissions.ts` also exports `ROLE_ACCESS`, a map of ten named role groups. Those
-groups now serve two purposes: they are the *shipped default* `defaultRoles` values in
+groups now serve two purposes: they are the _shipped default_ `defaultRoles` values in
 [`shared/permissions.ts`](../../shared/permissions.ts) (`PERMISSION_DEFINITIONS`), and they remain
 the direct gate for the small set of context-policy checks described below that are role-based by
 product decision rather than by omission.
@@ -35,7 +35,7 @@ list. `requireRole` (in `main/middleware/security.ts`) still exists, but a stati
 (`tests/authorization-static-audit.test.ts`) fails the build if a new call site under
 `main/routes/` uses it; the few remaining direct role checks are reviewed context policy, covered
 in their own sections below (KDS station/category scope, refund approver identity, the
-override-PIN holder for order-status and item cancel/void overrides, and the
+override-PIN holder for order-status, kitchen-delivery, and item cancel/void overrides, and the
 last-active-owner/staff-target rule).
 
 **Resolution.** For every permission id, `resolveEffectivePermissions(userId)` evaluates, in
@@ -69,9 +69,16 @@ itself, the full permission catalog rendered as a matrix, and the owner-only man
 
 **Secret.** `getJWTSecret()` in
 [`main/security/jwt-secret.ts`](../../main/security/jwt-secret.ts) reads `process.env.JWT_SECRET` when set and
-otherwise reads the `jwt_secret` row in the `settings` table, generating one on first launch. The
-value is cached in a module-level variable, so each install has its own secret and a token from
-one install does not validate against another. That module owns the only copy of the cache;
+otherwise reads the secret from Electron `safeStorage` (the encrypted `jwt-secret.enc` file in the
+user-data directory) in packaged builds, generating one on first launch. The `jwt_secret` settings row then holds only
+the marker `safe-storage:v1`; a packaged install whose row still holds a plaintext secret is migrated on its
+first read. Where OS encryption is unavailable, in unpackaged development runs, and in the Electron-less dev server,
+the secret stays in the `jwt_secret` settings row so development runs sharing `flo.db` remain compatible. If an
+unpackaged development run encounters the `safe-storage:v1` marker, it recovers the secret from development secure
+storage back into SQLite so `node dev-server.js` continues to function. If the
+secure file becomes unreadable, a new secret is generated and existing sessions end. The value is cached in a
+module-level variable, so each install has its own secret and a token from one install does not validate against another.
+That module owns the only copy of the cache;
 `clearJWTSecretCache()` in the same module invalidates it, and a restore that restored a rotated
 secret must go through it or pre-rotation tokens would keep validating.
 
@@ -128,17 +135,23 @@ a router, in [`main/routes/index.ts`](../../main/routes/index.ts). A static sear
 **Gates inside transaction bodies.** The most important case. Some endpoints perform the
 permission check inside the `withTxn` callback, after the transaction opens, using
 `hasPermission(actorId, id)` against state read in the same transaction.
-`PATCH /api/orders/:id/status`, `PATCH /api/orders/:orderId/items/:itemId/cancel`, and the matching
-`.../restore` endpoint in `main/routes/orders.ts` do this, and their override-PIN paths
-additionally require the presenting user to satisfy `hasRole(role, ROLE_ACCESS.ownerManager)` - a
-deliberate context-policy role check, not a permission, because the override PIN belongs to a
+`PATCH /api/orders/:id/status`, `PATCH /api/orders/:orderId/items/:itemId/cancel`, the matching
+`.../restore` endpoint in `main/routes/orders.ts`, and the bill payment kitchen-delivery override
+in `main/routes/bills.ts` do this, and their override-PIN paths additionally require the presenting
+user to satisfy `hasRole(role, ROLE_ACCESS.ownerManager)` - a deliberate context-policy role check,
+not a permission, because the override PIN belongs to a
 person acting in an owner/manager capacity regardless of what their individual permission grants
 say. To prevent event loop starvation and transaction lock contention during CPU-intensive bcrypt
-evaluations, manager PINs are verified asynchronously via `verifyPinAsync` outside the transaction
-(with client-IP rate limits checked first). The pre-verified approver is then atomically re-validated
-inside `withTxn` against current SQLite state (active status, owner/manager role, required permissions,
-and matching `pin_hash`). The check cannot be hoisted into middleware without changing the read the
-decision is based on, and it is invisible to anything that inspects the route's middleware chain.
+evaluations, manager PINs are verified asynchronously via `verifyPinAsync` outside the transaction,
+serialized per client IP and action key with `withPinVerificationLock` from
+[`main/middleware/security.ts`](../../main/middleware/security.ts) (re-checking client-IP rate limits
+inside the lock before executing bcrypt). Candidate filtering during pre-verification enforces the
+role and permissions required by the transition (including `payments.take` when completion is
+blocked by unsettled payment), ensuring fallback PIN scanning only matches eligible approvers. The
+pre-verified approver is then atomically re-validated inside `withTxn` against current SQLite state
+(active status, owner/manager role, required permissions, and matching `pin_hash`). The check cannot
+be hoisted into middleware without changing the read the decision is based on, and it is invisible to
+anything that inspects the route's middleware chain.
 
 **KDS WebSocket authorization.** The KDS socket authenticates with the same bearer token but
 authorizes per message. See below.
@@ -147,14 +160,14 @@ authorizes per message. See below.
 
 `isTokenRevoked`, `isTokenStale`, `getJWTSecret`, `rateLimit`, `authRateLimit`,
 `loginAuthRateLimit`, and `staticRouteRateLimit` are exported from one module and imported by all
-three servers, so the primitives are shared. The *middleware body* that sequences them is not: each
+three servers, so the primitives are shared. The _middleware body_ that sequences them is not: each
 server writes its own.
 
-| Server | Middleware | Shape |
-| --- | --- | --- |
-| `:3001` | `requireAuth` in [`main/server.ts`](../../main/server.ts) | Guards `/api`, with an unauthenticated-path allowlist, then revocation, verify, cached user lookup, staleness. |
-| `:3002` | `requireAuth` closure inside the server factory in [`main/kds-server.ts`](../../main/kds-server.ts) | Revocation, verify, uncached user lookup, staleness, then `hasPermission(user.id, 'kitchen.use')` and station resolution. |
-| `:3003` | `requireServerAppAuth` in [`main/server-app.ts`](../../main/server-app.ts) | 404-when-disabled, then revocation, verify, uncached user lookup, staleness, then `hasPermission(user.id, 'server-app.use')`. |
+| Server  | Middleware                                                                                          | Shape                                                                                                                         |
+| ------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `:3001` | `requireAuth` in [`main/server.ts`](../../main/server.ts)                                           | Guards `/api`, with an unauthenticated-path allowlist, then revocation, verify, cached user lookup, staleness.                |
+| `:3002` | `requireAuth` closure inside the server factory in [`main/kds-server.ts`](../../main/kds-server.ts) | Revocation, verify, uncached user lookup, staleness, then `hasPermission(user.id, 'kitchen.use')` and station resolution.     |
+| `:3003` | `requireServerAppAuth` in [`main/server-app.ts`](../../main/server-app.ts)                          | 404-when-disabled, then revocation, verify, uncached user lookup, staleness, then `hasPermission(user.id, 'server-app.use')`. |
 
 The three already differ in one observable way. `:3001` reads user active status, role, and
 `tokens_valid_after` through `getUserAuthStatus`, which caches for 30 seconds. `:3002` and `:3003`
@@ -172,8 +185,8 @@ All three HTTP listeners (`:3001` Main API, `:3002` Standalone KDS, and `:3003` 
 
 1. **Volume rate limiter (`loginAuthRateLimit`):** Used on all three default login endpoints, `loginAuthRateLimit()` reuses a shared singleton instance so total authentication request volume across listeners shares a single budget (default 10 requests per 15 minutes, configurable via `FLO_AUTH_RATE_LIMIT_MAX`). Non-login authentication routes (e.g. staff management, password changes) use independent rate-limiter instances.
 2. **Shared failed-login lockout (`checkLoginRateLimit` / `incrementFailedLogin`):** Keyed to the canonical client IP (`normalizeIpForRateLimit`, which strips `::ffff:` IPv4-mapped IPv6 prefixes so IPv4 and IPv6 representations share the exact same bucket). Five failed credential attempts across any combination of the three listeners triggers a 15-minute lockout (HTTP `429`). During the lockout, any further login attempt on any listener is rejected before password evaluation.
-3. **Reset on success (`resetSuccessfulLogin`):** A successful login from any listener immediately clears the failed-attempt count for that client IP.
-4. **Role and permission decoupling:** Non-credential rejections (such as HTTP `403` when valid credentials lack `kitchen.use` on `:3002` or `server-app.use` on `:3003`) do not count as credential failures.
+3. **Reset on success (`resetSuccessfulLogin`):** A successful login from any listener immediately clears the failed-attempt count for that client IP once role and permission checks pass.
+4. **Role and permission decoupling:** Non-credential rejections (such as HTTP `403` when valid credentials lack `kitchen.use` on `:3002` or `server-app.use` on `:3003`) do not count as credential failures and do not clear previously accumulated failed-login attempts.
 
 ## Master PIN as a second factor
 
@@ -185,13 +198,13 @@ to `authorizeMasterPin` in
 
 `authorizeMasterPin` is a fail-closed ladder, in order:
 
-| Condition | Result |
-| --- | --- |
-| OS-backed encryption unavailable | 503, and the gated operation is blocked rather than allowed through |
-| PIN not set on this device | 409 |
-| Rate limit reached for this key | 429 |
-| PIN absent, not a string, or not exactly 4 digits | 403 |
-| PIN does not verify | 403, and the attempt is recorded; 429 once the limit is reached |
+| Condition                                         | Result                                                              |
+| ------------------------------------------------- | ------------------------------------------------------------------- |
+| OS-backed encryption unavailable                  | 503, and the gated operation is blocked rather than allowed through |
+| PIN not set on this device                        | 409                                                                 |
+| Rate limit reached for this key                   | 429                                                                 |
+| PIN absent, not a string, or not exactly 4 digits | 403                                                                 |
+| PIN does not verify                               | 403, and the attempt is recorded; 429 once the limit is reached     |
 
 The PIN hash is stored through Electron `safeStorage` in `master-pin.enc` under the app's
 `userData` directory, written with mode `0o600`. Rate limiting is in memory, keyed by IP and route
@@ -273,11 +286,11 @@ transport security: it does not stop an attacker on the same network from readin
 from the wire. The deployment rule is to treat the LAN as trusted. Do not expose the API or KDS
 port to a guest or shared network.
 
-**The renderer sandbox is disabled.** The main window sets `sandbox: false`, and the Windows build
-appends Chromium's `disable-gpu-sandbox` switch as a compatibility workaround.
-`contextIsolation: true`, `nodeIntegration: false`, the CSP, the external-window URL allowlist,
-and in-window navigation confinement carry the isolation instead. A renderer compromise has less
-process isolation than Electron's preferred configuration.
+**The GPU process sandbox is relaxed on Windows.** The Windows build appends Chromium's
+`disable-gpu-sandbox` switch as a compatibility workaround. The main window itself runs with
+`sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false`; its preload uses only
+`electron` and web APIs. The CSP, the external-window URL allowlist, and in-window navigation
+confinement add to that isolation.
 
 **The WhatsApp session is not encrypted at rest.** `main/services/whatsapp.ts` creates the
 credential directory with mode `0o700`, so another OS user cannot read it, but the session files

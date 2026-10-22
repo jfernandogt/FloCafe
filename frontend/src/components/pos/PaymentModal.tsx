@@ -54,6 +54,8 @@ import { allocateEqualShares } from '@/lib/money';
 import { parseAppliedCharges, type AppliedCharge } from '@/lib/charges';
 import { useChargesStore, chargesForOrderType } from '@/store/charges';
 import { classifyOrderRequestFailure, type OperationFailureMetadata } from '@/lib/order-attempt';
+import { ApproverSelect } from '@/components/ApproverSelect';
+import { useManagerApprovers } from '@/hooks/useManagerApprovers';
 
 interface Props {
   bill: Bill;
@@ -74,6 +76,7 @@ interface Payment {
   method: string;
   payment_method_id?: number;
   amount: string;
+  transaction_id?: string;
 }
 
 type AmountTarget =
@@ -100,7 +103,12 @@ type PendingPaymentAttempt = {
   key: string;
   operationId: string | null;
   zeroBalance: boolean;
-  lines: { method: string; amount: number | null; payment_method_id?: number }[];
+  lines: {
+    method: string;
+    amount: number | null;
+    payment_method_id?: number;
+    transaction_id?: string;
+  }[];
   customerId: string | number | null;
 };
 
@@ -182,10 +190,13 @@ export default function PaymentModal({
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [walletAmount, setWalletAmount] = useState('');
   const [customMethods, setCustomMethods] = useState<CustomPaymentMethod[]>([]);
+  const managerApprovers = useManagerApprovers();
+  const [cardTransactionIdRequired, setCardTransactionIdRequired] = useState(false);
   const [kitchenOverrideRequired, setKitchenOverrideRequired] = useState(
     Boolean(initialOverridePin),
   );
   const [kitchenOverridePin, setKitchenOverridePin] = useState(initialOverridePin || '');
+  const [kitchenApproverId, setKitchenApproverId] = useState<string | null>(null);
   const [kitchenUndeliveredCount, setKitchenUndeliveredCount] = useState(0);
   const [kitchenUndeliveredItems, setKitchenUndeliveredItems] = useState<string[]>([]);
   const [kitchenDeliveryError, setKitchenDeliveryError] = useState('');
@@ -209,6 +220,7 @@ export default function PaymentModal({
   const [discountMode, setDiscountMode] = useState<DiscountMode>('percentage');
   const [discountRequiresApproval, setDiscountRequiresApproval] = useState(false);
   const [discountPin, setDiscountPin] = useState('');
+  const [discountApproverId, setDiscountApproverId] = useState<string | null>(null);
   const [applyingDiscount, setApplyingDiscount] = useState(false);
   const [loyaltySettings, setLoyaltySettings] = useState<{ loyalty_enabled: boolean } | null>(null);
   const [amountTarget, setAmountTarget] = useState<AmountTarget>(null);
@@ -567,6 +579,10 @@ export default function PaymentModal({
       })
       .catch(() => {});
     api
+      .get('/settings/card_transaction_id_required')
+      .then((res) => setCardTransactionIdRequired(res.data?.setting?.value === 'true'))
+      .catch(() => {});
+    api
       .get('/payment-methods')
       .then((res) => {
         const methods: CustomPaymentMethod[] = res.data.payment_methods || [];
@@ -660,7 +676,7 @@ export default function PaymentModal({
     setPayments((rows) =>
       rows.map((row, index) =>
         index === applied.index && row.amount === applied.amountInput
-          ? { ...row, amount: '' }
+          ? { ...row, amount: '', transaction_id: '' }
           : row,
       ),
     );
@@ -709,6 +725,20 @@ export default function PaymentModal({
       current.map((payment, index) => (index === idx ? { ...payment, amount: value } : payment)),
     );
   };
+
+  const updatePaymentTransactionId = (idx: number, value: string) => {
+    if (attemptLocked) return;
+    setPayments((current) =>
+      current.map((payment, index) =>
+        index === idx ? { ...payment, transaction_id: value } : payment,
+      ),
+    );
+  };
+
+  const needsTransactionId = (payment: Payment) =>
+    cardTransactionIdRequired &&
+    payment.method === 'card' &&
+    payment.payment_method_id === undefined;
 
   const allocateRemainingTo = (idx: number) => {
     if (attemptLocked) return;
@@ -822,10 +852,19 @@ export default function PaymentModal({
       toast.error(t('discountInvalid'));
       return;
     }
+    const effectiveDiscountApproverId = discountApproverId ?? managerApprovers.selectedApproverId;
     // Check if PIN is required
-    if (discountRequiresApproval && val > 0 && !discountPin) {
-      toast.error(t('managerPinRequired'));
-      return;
+    if (discountRequiresApproval && val > 0) {
+      if (
+        !discountPin ||
+        managerApprovers.loading ||
+        managerApprovers.loadFailed ||
+        managerApprovers.approvers.length === 0 ||
+        !effectiveDiscountApproverId
+      ) {
+        toast.error(t('managerPinRequired'));
+        return;
+      }
     }
     if (val > 0 && !isDiscountTypeAllowed(discountMode, discountType)) {
       toast.error(t('discountInvalid'));
@@ -843,11 +882,16 @@ export default function PaymentModal({
           discount_value: storedDiscountValue,
           discount_reason: val > 0 ? discountReason || undefined : undefined,
           override_pin: discountRequiresApproval && val > 0 ? discountPin : undefined,
+          approver_id:
+            discountRequiresApproval && val > 0 && discountPin
+              ? effectiveDiscountApproverId || undefined
+              : undefined,
         },
         { headers: operationHeaders(operationId) },
       );
       toast.success(val === 0 ? t('discountRemoved') : t('discountUpdated'));
       setDiscountPin('');
+      setDiscountApproverId(null);
       if (val === 0) {
         setShowDiscount(false);
         setDiscountValue('');
@@ -1013,6 +1057,9 @@ export default function PaymentModal({
         method: p.payment_method_id === undefined ? p.method : 'custom',
         ...(p.payment_method_id !== undefined ? { payment_method_id: p.payment_method_id } : {}),
         amount: toStoredUnit(parseFloat(p.amount) || 0),
+        ...(needsTransactionId(p) && p.transaction_id?.trim()
+          ? { transaction_id: p.transaction_id.trim() }
+          : {}),
       }))
       .filter((p) => p.amount > 0 && !isNaN(p.amount));
     if (walletAmt > 0) splitLines.push({ method: 'wallet', amount: walletAmt });
@@ -1037,6 +1084,20 @@ export default function PaymentModal({
     inFlightRef.current = true;
     setProcessing(true);
     setRequestFailure(null);
+    const effectiveKitchenApproverId = kitchenApproverId ?? managerApprovers.selectedApproverId;
+    if (kitchenOverridePin) {
+      if (
+        managerApprovers.loading ||
+        managerApprovers.loadFailed ||
+        managerApprovers.approvers.length === 0 ||
+        !effectiveKitchenApproverId
+      ) {
+        toast.error(t('managerPinRequired'));
+        inFlightRef.current = false;
+        setProcessing(false);
+        return;
+      }
+    }
     try {
       const res = await api.post(
         attempt.zeroBalance ? `/bills/${bill.id}/payment` : `/bills/${bill.id}/payments`,
@@ -1046,11 +1107,13 @@ export default function PaymentModal({
               amount: attempt.lines[0].amount,
               customer_id: attempt.customerId,
               override_pin: kitchenOverridePin || undefined,
+              approver_id: kitchenOverridePin ? effectiveKitchenApproverId || undefined : undefined,
             }
           : {
               payments: attempt.lines,
               customer_id: attempt.customerId,
               override_pin: kitchenOverridePin || undefined,
+              approver_id: kitchenOverridePin ? effectiveKitchenApproverId || undefined : undefined,
             },
         { headers: { 'Idempotency-Key': attempt.key, ...operationHeaders(attempt.operationId) } },
       );
@@ -1084,6 +1147,9 @@ export default function PaymentModal({
       setRequestFailure(null);
       setKitchenOverrideRequired(false);
       if (updatedBill.payment_status !== 'paid') {
+        setPayments((rows) =>
+          rows.map((row) => (row.transaction_id ? { ...row, transaction_id: '' } : row)),
+        );
         if (onBillUpdate) onBillUpdate({ ...bill, ...updatedBill, order: bill.order });
         // Only a committed equal share retires its payer, and only once.
         if (
@@ -1156,6 +1222,7 @@ export default function PaymentModal({
       const paymentDisplayMessages: Record<string, string> = {
         transaction_reference_used: t('paymentTransactionReferenceUsed'),
         transaction_reference_reused: t('paymentTransactionReferenceReused'),
+        card_transaction_id_required: t('cardTransactionIdMissing'),
         bill_refunded: t('paymentBillRefunded'),
         bill_already_paid: t('paymentBillAlreadyPaid'),
         customer_mismatch: t('paymentCustomerMismatch'),
@@ -1171,6 +1238,10 @@ export default function PaymentModal({
         payment_input_invalid: t('paymentInputInvalid'),
         cash_session_required: tExpenses('cashSessionClosed'),
       };
+      // The setting may be unreadable for this role; the backend's refusal still reveals it.
+      if (failure.displayCode === 'card_transaction_id_required') {
+        setCardTransactionIdRequired(true);
+      }
       const reasonMessage =
         failure.outcome === 'applied'
           ? t('paymentCompletionApplied')
@@ -1337,6 +1408,15 @@ export default function PaymentModal({
       toast.error(t('paymentFailed'));
       return;
     }
+    if (
+      payments.some(
+        (p) =>
+          needsTransactionId(p) && (parseFloat(p.amount) || 0) > 0 && !p.transaction_id?.trim(),
+      )
+    ) {
+      toast.error(t('cardTransactionIdMissing'));
+      return;
+    }
     const nonCashTotalMinor =
       payments
         .filter((p) => p.method !== 'cash')
@@ -1470,20 +1550,35 @@ export default function PaymentModal({
               {kitchenUndeliveredItems.length > 0 && (
                 <p className="mt-1 break-words text-xs">{kitchenUndeliveredItems.join(', ')}</p>
               )}
-              <input
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={kitchenOverridePin}
-                onChange={(event) => {
-                  setKitchenOverridePin(event.target.value.replace(/\D/g, '').slice(0, 6));
-                  setKitchenDeliveryError('');
-                }}
-                placeholder={t('managerPin')}
-                aria-label={t('managerPin')}
-                className="mt-3 min-h-11 w-full rounded-lg border border-amber-300 bg-card px-3 py-2 text-center text-lg tracking-[0.5em] dark:border-amber-700"
-              />
+              <div className="mt-3 space-y-2 text-start">
+                <ApproverSelect
+                  id="kitchenApproverSelect"
+                  approvers={managerApprovers.approvers}
+                  selectedApproverId={kitchenApproverId ?? managerApprovers.selectedApproverId}
+                  onSelectApprover={(id) => {
+                    setKitchenApproverId(id);
+                    setKitchenOverridePin('');
+                    setKitchenDeliveryError('');
+                  }}
+                  loading={managerApprovers.loading}
+                  loadFailed={managerApprovers.loadFailed}
+                  disabled={processing || attemptLocked}
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={kitchenOverridePin}
+                  onChange={(event) => {
+                    setKitchenOverridePin(event.target.value.replace(/\D/g, '').slice(0, 6));
+                    setKitchenDeliveryError('');
+                  }}
+                  placeholder={t('managerPin')}
+                  aria-label={t('managerPin')}
+                  className="min-h-11 w-full rounded-lg border border-amber-300 bg-card px-3 py-2 text-center text-lg tracking-[0.5em] dark:border-amber-700"
+                />
+              </div>
               {kitchenDeliveryError && (
                 <p className="mt-1 text-xs text-red-700 dark:text-red-300">
                   {kitchenDeliveryError}
@@ -1725,15 +1820,31 @@ export default function PaymentModal({
                       className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
                     />
                     {discountRequiresApproval && parseFloat(discountValue) > 0 && (
-                      <input
-                        type="password"
-                        value={discountPin}
-                        disabled={processing || attemptLocked}
-                        onChange={(e) => setDiscountPin(e.target.value)}
-                        placeholder={t('managerPin')}
-                        maxLength={6}
-                        className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
-                      />
+                      <div className="space-y-2">
+                        <ApproverSelect
+                          id="paymentDiscountApprover"
+                          approvers={managerApprovers.approvers}
+                          selectedApproverId={
+                            discountApproverId ?? managerApprovers.selectedApproverId
+                          }
+                          onSelectApprover={(id) => {
+                            setDiscountApproverId(id);
+                            setDiscountPin('');
+                          }}
+                          loading={managerApprovers.loading}
+                          loadFailed={managerApprovers.loadFailed}
+                          disabled={processing || attemptLocked || applyingDiscount}
+                        />
+                        <input
+                          type="password"
+                          value={discountPin}
+                          disabled={processing || attemptLocked || applyingDiscount}
+                          onChange={(e) => setDiscountPin(e.target.value)}
+                          placeholder={t('managerPin')}
+                          maxLength={6}
+                          className="w-full min-h-11 px-3 py-2 text-sm border border-purple-200 dark:border-purple-800/40 rounded-lg outline-none focus:ring-2 focus:ring-purple-400 bg-card"
+                        />
+                      </div>
                     )}
                     <Button
                       onClick={() => handleApplyDiscount()}
@@ -1744,7 +1855,14 @@ export default function PaymentModal({
                         openingSplitCheck ||
                         Boolean(updatingChargeId) ||
                         discountValue === '' ||
-                        isNaN(parseFloat(discountValue))
+                        isNaN(parseFloat(discountValue)) ||
+                        (discountRequiresApproval &&
+                          parseFloat(discountValue) > 0 &&
+                          (!discountPin ||
+                            managerApprovers.loading ||
+                            managerApprovers.loadFailed ||
+                            managerApprovers.approvers.length === 0 ||
+                            !(discountApproverId ?? managerApprovers.selectedApproverId)))
                       }
                       className="w-full bg-purple-600 hover:bg-purple-700 text-white"
                     >
@@ -1964,6 +2082,19 @@ export default function PaymentModal({
                         />
                       </div>
                     </div>
+                    {needsTransactionId(payment) && active && (
+                      <input
+                        type="text"
+                        value={payment.transaction_id ?? ''}
+                        disabled={processing || attemptLocked}
+                        onChange={(e) => updatePaymentTransactionId(idx, e.target.value)}
+                        placeholder={t('cardTransactionIdLabel')}
+                        aria-label={t('cardTransactionIdLabel')}
+                        maxLength={256}
+                        autoComplete="off"
+                        className="w-full min-h-11 rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand"
+                      />
+                    )}
                     {isAppliedShare && (
                       <p className="px-1 text-[11px] font-medium text-brand">
                         {t('equalShareBadge')}
@@ -2217,7 +2348,14 @@ export default function PaymentModal({
                   applyingDiscount ||
                   Boolean(updatingChargeId) ||
                   chargeStateUncertain ||
-                  (!pendingAttempt && totalPaymentMinor === 0 && remainingMinor > 0)
+                  (!pendingAttempt && totalPaymentMinor === 0 && remainingMinor > 0) ||
+                  Boolean(
+                    kitchenOverridePin &&
+                    (managerApprovers.loading ||
+                      managerApprovers.loadFailed ||
+                      managerApprovers.approvers.length === 0 ||
+                      !(kitchenApproverId ?? managerApprovers.selectedApproverId)),
+                  )
                 }
                 className="w-full"
                 size="lg"

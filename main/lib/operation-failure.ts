@@ -68,6 +68,7 @@ const PAYMENT_DISPLAY_CODES = [
   'transaction_reference_reused',
   'bill_refunded',
   'bill_already_paid',
+  'payment_exceeds_balance',
   'customer_mismatch',
   'customer_unavailable',
   'wallet_customer_required',
@@ -80,6 +81,7 @@ const PAYMENT_DISPLAY_CODES = [
   'payment_method_unavailable',
   'payment_input_invalid',
   'cash_session_required',
+  'card_transaction_id_required',
 ] as const;
 const BILL_CHARGE_DISPLAY_CODES = [
   'charge_required',

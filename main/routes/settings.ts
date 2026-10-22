@@ -1,8 +1,9 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, RequestHandler } from 'express';
 import expressRateLimit from 'express-rate-limit';
 import { randomUUID } from 'crypto';
-import { getDatabase, getSettingValue, now } from '../db';
+import { getDatabase, getSettingValue, now, parseBackupPaginationQuery } from '../db';
 import {
+  CloudRequestError,
   cloudSync,
   DEFAULT_CLOUD_SERVER_URL,
   normalizeCloudServerUrl,
@@ -12,7 +13,11 @@ import {
   getGoogleDriveErrorCode,
   googleDrive,
 } from '../services/google-drive';
-import { requireAnyPermission, requirePermission } from '../services/authorization';
+import {
+  requireAnyPermission,
+  requirePermission,
+  resolveEffectivePermissions,
+} from '../services/authorization';
 import {
   CUSTOMER_DISPLAY_KEY,
   parseCustomerDisplayConfig,
@@ -152,6 +157,7 @@ const OPTIONAL_SETTING_DEFAULTS: Record<string, string> = {
   receipt_logo_raster: '',
   printer_trim_decimals: 'false',
   split_checks_enabled: 'false',
+  card_transaction_id_required: 'false',
   // Print language policies (#441) — inherit store language, no second
   // language. Defaults preserve pre-policy behavior for existing tenants.
   [BILL_LANGUAGE_POLICY_KEY]: defaultLanguagePolicySettingJson(),
@@ -268,7 +274,30 @@ function taxShape(s: Record<string, string>) {
 
 // ── Specific routes (must come BEFORE /:key wildcard) ─────────────────────
 
-router.get('/business', requirePermission('settings.view'), (req: Request, res: Response) => {
+const requireBusinessSettingsRead: RequestHandler = (req, res, next) => {
+  const userId = String((req as Request & { user?: { userId?: string } }).user?.userId || '');
+  if (!userId) {
+    return res
+      .status(401)
+      .json({ error: 'Authentication required', code: 'authentication_required' });
+  }
+  const effective = resolveEffectivePermissions(userId);
+  if (
+    !effective ||
+    !['settings.view', 'bills.read', 'bills.print', 'bills.generate'].some((permissionId) =>
+      effective.permissionIds.has(permissionId as any),
+    )
+  ) {
+    return res.status(403).json({
+      error: 'Insufficient permissions',
+      code: 'permission_denied',
+      permission: 'settings.view',
+    });
+  }
+  next();
+};
+
+router.get('/business', requireBusinessSettingsRead, (req: Request, res: Response) => {
   try {
     const s = getAllSettings(getDatabase());
     res.json(businessShape(s));
@@ -1169,6 +1198,21 @@ router.put(
   }),
 );
 
+function describeVerificationFailure(error: unknown): string {
+  if (error instanceof CloudRequestError) {
+    return `FloAdmin rejected the request (HTTP ${error.status}): ${error.message}`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return 'FloAdmin did not respond in time';
+  }
+  if (error instanceof TypeError) {
+    const cause = (error as { cause?: { code?: string } }).cause?.code;
+    return `Could not reach FloAdmin${cause ? ` (${cause})` : ''}`;
+  }
+  return message;
+}
+
 router.post(
   '/cloud/account/verification',
   requirePermission('cloud.account.manage'),
@@ -1185,8 +1229,9 @@ router.post(
           ),
         ),
       );
-    } catch {
-      res.status(502).json({ error: 'Could not send verification email' });
+    } catch (error) {
+      console.error('[Cloud] Verification email request failed:', error);
+      res.status(502).json({ error: describeVerificationFailure(error) });
     }
   }),
 );
@@ -1409,10 +1454,14 @@ router.post(
 router.get(
   '/google-drive/backups',
   requirePermission('google-drive.manage'),
-  asyncHandler(async (_req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     try {
-      return res.json({ backups: await googleDrive.listRemoteBackups() });
-    } catch (error) {
+      const pagination = parseBackupPaginationQuery(req.query.limit, req.query.cursor);
+      return res.json(await googleDrive.listRemoteBackupsPage(pagination));
+    } catch (error: any) {
+      if (error?.code === 'ERR_INVALID_BACKUP_PAGINATION') {
+        return res.status(400).json({ error: error.message });
+      }
       return googleDriveErrorResponse(res, error);
     }
   }),
@@ -1525,6 +1574,30 @@ router.get(
   },
 );
 
+router.get(
+  '/card_transaction_id_required',
+  settingsReadRateLimit,
+  requireAnyPermission('settings.view', 'payments.take', 'orders.create', 'bills.read'),
+  (_req: Request, res: Response) => {
+    try {
+      const setting = getDatabase()
+        .prepare('SELECT * FROM settings WHERE key = ?')
+        .get('card_transaction_id_required');
+      if (setting) return res.json({ setting });
+      return res.json({
+        setting: {
+          key: 'card_transaction_id_required',
+          value: OPTIONAL_SETTING_DEFAULTS.card_transaction_id_required,
+          updated_at: null,
+        },
+      });
+    } catch (error) {
+      console.error('[API] Internal error:', error);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  },
+);
+
 // ── Generic key-value routes (wildcard — must be last) ─────────────────────
 
 // Only non-sensitive keys may be updated via the wildcard route.
@@ -1569,6 +1642,7 @@ const ALLOWED_WILDCARD_KEYS = new Set([
   'kot_printing_enabled',
   'server_app_bill_printing_enabled',
   'split_checks_enabled',
+  'card_transaction_id_required',
   BILL_LANGUAGE_POLICY_KEY,
   KOT_LANGUAGE_POLICY_KEY,
   Z_REPORT_LANGUAGE_POLICY_KEY,
@@ -1846,9 +1920,12 @@ router.put(
         return res.status(400).json({ error: 'orders_layout must be "split" or "cards"' });
       }
       let valueToPersist: unknown = value;
-      if (req.params.key === 'require_open_shift') {
+      if (
+        req.params.key === 'require_open_shift' ||
+        req.params.key === 'card_transaction_id_required'
+      ) {
         if (value !== true && value !== false && value !== 'true' && value !== 'false') {
-          return res.status(400).json({ error: 'require_open_shift must be a boolean' });
+          return res.status(400).json({ error: `${req.params.key} must be a boolean` });
         }
         valueToPersist = value === true || value === 'true' ? 'true' : 'false';
       }
